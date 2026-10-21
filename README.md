@@ -1,186 +1,317 @@
-# RestaurantIQ — AI Restaurant Intelligence & Dynamic Pricing Engine
+# RestaurantIQ
 
-> **Enterprise-grade restaurant intelligence platform** delivering bounded dynamic pricing, portion-normalized competitor benchmarking, contribution margin optimization, genuine time-series demand forecasting, and authenticated multi-role governance.
+### Restaurant intelligence, explainable dynamic pricing, and customer-trust safeguards
 
----
+[![Frontend](https://img.shields.io/badge/Frontend-React%2019%20%7C%20TypeScript-646CFF)](#technology-stack) [![Backend](https://img.shields.io/badge/Backend-Express%20%7C%20Node.js-009688)](#architecture) [![Tests](https://img.shields.io/badge/Tests-118%20passing-2ea44f)](#testing) [![Pricing](https://img.shields.io/badge/Pricing-Deterministic%20%7C%20Policy--bounded-2447D4)](#pricing-safeguards)
 
-## 1. Executive Overview
+RestaurantIQ is a full-stack restaurant operations and revenue-management application. It brings menu economics, competitor observations, demand forecasting, pricing recommendations, approvals, and audit history into one workspace—while keeping pricing decisions deterministic and bounded by explicit business policies.
 
-RestaurantIQ is a specialized decision-intelligence SaaS designed for restaurant operators, revenue management teams, and multi-outlet hospitality groups. The system protects operational profitability by replacing intuition-based pricing with **contribution-based optimization** governed by hard mathematical economic floors.
-
-### Core Capabilities
-* **Experience A (Immersive Product Entry):** Real-time Three.js WebGL gyroscope orb with cursor tracking, metallic rings, and editorial typography.
-* **Experience B (Operational Command Center):** Full SaaS operations console with real-time revenue KPIs, dynamically computed 30-day historical deltas, pending recommendations queue, and category breakdown.
-* **Deterministic Dynamic Pricing Engine:** Computes optimal price points based on competitor medians, demand elasticity ($\varepsilon$), platform commission deductions, and inventory turnover.
-* **Guaranteed Economic Floors:** Hard boundary checks enforce $P \ge \lceil(C_{\text{variable}} + M_{\min}) / ((1 - \text{discountPct}) \times (1 - \text{feeRate}))\rceil$, preventing loss-leading or margin erosion across both recommendation and application time.
-* **Additive Holt-Winters Demand Forecasting:** Genuine time-series forecasting capturing 7-day cyclical seasonality ($L=7$), level smoothing ($\alpha=0.25$), trend smoothing ($\beta=0.08$), and seasonal smoothing ($\gamma=0.30$) with out-of-sample held-out split error validation (MAE and RMSE).
-* **Role-Based Access Control (RBAC):** Server-verified cryptographic HMAC-SHA256 session tokens governing Admin, Revenue Manager, Kitchen Ops, and Auditor permissions.
-* **Atomic File Persistence:** Durable JSON storage (`data/restaurantiq-data.json`) with tempfile-to-rename atomic write guarantees, mutation mutex, and schema migration (`v1.4.0`).
-* **Location-Aware Competitor Radar:** Scopes competitor observations by geographic radius (1.5km – 5.0km) from the active outlet using haversine geodesic calculation.
-* **Portion-Normalized Dish Matching:** Automatically scales competitor pricing to internal portion weights (e.g. 550g handi vs. 400g bowl) and flags mismatched sharing sizes.
-* **Tamper-Evident Audit Trail:** Every price approval, manual override, rejection, and POS push is recorded with operator identity, rationale, and policy safeguard status.
-* **Server-Side Gemini AI Strategic Copilot:** Powered by `@google/genai` (Gemini 2.5 Flash) with contextual injection of live sales, low stock alerts, competitor benchmarks, and deterministic fallback.
+> **Customer trust is a pricing-stability objective, not a churn prediction.** The application does not have customer-linked visit history or complaint data. It therefore reports pricing-stability evidence and clearly describes data limitations rather than claiming that an individual customer will or will not return.
 
 ---
 
-## 2. Mathematical Formulation & Pricing Safeguards
+## Contents
 
-### 2.1 Single Financial Calculation Model
-1. **Customer Gross Price:** $P_{\text{gross}}$
-2. **Customer Discounted Price:** $P_{\text{disc}} = P_{\text{gross}} \times (1 - \text{discountPct})$
-3. **Platform Fee Deductions:** Applied to discounted price:
-   $$\text{Fee Rate} = \text{deliveryCommissionPct} + \text{paymentProcessingFeePct} \quad (\text{default: } 20\% + 2\% = 22\%)$$
-4. **Net Recognized Selling Price:**
-   $$P_{\text{net}} = P_{\text{disc}} \times (1 - \text{Fee Rate}) = P_{\text{gross}} \times (1 - \text{discountPct}) \times (1 - \text{Fee Rate})$$
-5. **Net Unit Contribution:**
-   $$\text{Net Contribution} = P_{\text{net}} - C_{\text{variable}}$$
-6. **Net Contribution Margin %:**
-   $$\text{Net Margin \%} = \frac{\text{Net Contribution}}{P_{\text{net}}} \times 100$$
-7. **Gross Contribution Margin %:**
-   $$\text{Gross Margin \%} = \frac{P_{\text{gross}} - C_{\text{variable}}}{P_{\text{gross}}} \times 100$$
+- [Overview](#overview)
+- [Highlights](#highlights)
+- [Customer Trust & Pricing Health](#customer-trust--pricing-health)
+- [Pricing Safeguards](#pricing-safeguards)
+- [Architecture](#architecture)
+- [Technology Stack](#technology-stack)
+- [Application Areas](#application-areas)
+- [API Reference](#api-reference)
+- [Getting Started](#getting-started)
+- [Environment Configuration](#environment-configuration)
+- [Testing](#testing)
+- [Data, Privacy & Limitations](#data-privacy--limitations)
+- [Repository Layout](#repository-layout)
+- [Production Notes](#production-notes)
 
-### 2.2 Economic Floor Invariant
-The selling price must guarantee that net recognized revenue covers variable costs plus minimum target contribution:
-$$P_{\text{floor}} = \left\lceil \frac{C_{\text{variable}} + M_{\min}}{(1 - \text{discountPct}) \times (1 - \text{Fee Rate})} \right\rceil$$
+## Overview
 
-$$P_{\text{effective\_floor}} = \max\left(P_{\text{floor}},\; P_{\min,\text{policy}}\right)$$
+RestaurantIQ supports restaurant operators and revenue managers through a guided pricing workflow:
 
-* If $P_{\text{effective\_floor}} > P_{\max,\text{policy}}$, the recommendation is **BLOCKED** (`isBlocked: true`).
-* If $P_{\text{effective\_floor}} > P_{\text{current}} \times (1 + L)$ (step limit), the engine flags `requiresStepOverride: true` and blocks unapproved POS application without explicit administrator authorization.
-* **Application-Time Revalidation:** When an operator applies a price to POS or executes a manual override, the backend re-evaluates the economic floor against active commissions and current variable costs.
+1. Review menu costs, sales history, inventory, and available competitor observations.
+2. Generate explainable recommendations with demand and margin context.
+3. Check economic floors, item ceilings, movement limits, protected-price settings, and actual applied-price history.
+4. Review, approve, reject, or apply recommendations through authenticated backend routes.
+5. Inspect persisted price changes and operator actions in the trust dashboard and audit trail.
 
-### 2.3 Step Movement Limiter ($L$)
-To protect customer price perception and loyalty, prices cannot move by more than $\pm L$ (configurable, default $15\%$) in a single cycle:
-$$P_{\text{current}} \times (1 - L) \le P^* \le P_{\text{current}} \times (1 + L)$$
+The experience combines an immersive product entry page with an operational command center. Existing menu, forecasting, inventory, competitor, simulator, approval, settings, and audit features remain part of the same application.
 
----
+## Highlights
 
-## 3. Demand Forecasting & Backtesting
+- **Deterministic pricing engine:** Uses costs, contribution targets, demand, inventory, and available competitor benchmarks. AI-generated advice cannot authorize or apply a price.
+- **Economic-floor enforcement:** Revalidates minimum contribution economics against current item costs and active outlet fees.
+- **Price-stability guard:** Configurable increase and decrease caps, minimum days between changes, rolling cumulative increase limits, manager-review warnings, stable-price protections, and optional loyalty-price protection.
+- **Actual-price history:** Only recorded manual price changes and successfully applied recommendations count as actual changes. Generated recommendations are not treated as history.
+- **Approval and application checks:** Rechecks current price, floors, ceilings, and stability rules at approval and application. Stale or duplicate applications are rejected.
+- **Override safeguards:** Admin manual overrides still need to pass economic-floor, ceiling, and movement policies.
+- **Customer Trust dashboard:** Displays menu stability status, verified price history, movement totals, blocked recommendations, review items, available order trends, and data limitations.
+- **Demand forecasting:** Holt-Winters time-series forecasting with held-out error metrics when enough observations are available, and an explicit insufficient-data path otherwise.
+- **Competitor intelligence:** Stores observations and provenance, normalizes matched prices for portion size, and scopes competitor information by outlet location.
+- **Governance and audit:** Captures approvals, applications, rejections, manual overrides, policy updates, and blocked recommendation events.
+- **Authenticated roles:** Server-verified signed tokens govern administrator, revenue manager, kitchen operations, and auditor capabilities.
+- **Persistent local state:** Uses atomic JSON writes and upgrades existing data files while retaining compatibility with earlier supported schemas.
+- **Responsive premium interface:** React, Three.js, Tailwind CSS, charts, and motion-enhanced views preserve the established RestaurantIQ visual style.
 
-* **Algorithm:** Additive Holt-Winters Exponential Smoothing with weekly seasonality period $L=7$ days.
-* **Validation Methodology:** Evaluated on a 14-day chronological held-out validation segment.
-* **Metrics:**
-  $$\text{MAE} = \frac{1}{14} \sum_{t=1}^{14} |y_t - \hat{y}_t|$$
-  $$\text{RMSE} = \sqrt{\frac{1}{14} \sum_{t=1}^{14} (y_t - \hat{y}_t)^2}$$
-* **Data Sufficiency Guard:** When fewer than 14 historical daily observations exist, MAE and RMSE are set strictly to `null`, and the UI indicates `"Validation metrics unavailable"`, falling back to a heuristic baseline.
+## Customer Trust & Pricing Health
 
----
+Open **Customer Trust** from the application sidebar or visit `/app/trust`.
 
-## 4. Security & Authentication Architecture
+The page presents backend-derived information for:
 
-* **Token Format:** HMAC-SHA256 signed session tokens (`<header>.<payload>.<signature>`) verified with constant-time equality checks.
-* **Client Header Independence:** Unauthenticated requests and client-controlled headers like `X-Operator-Role` are ignored for privilege escalation.
-* **Role-Based Access Matrix:**
-  * `admin`: Complete privileges including policy modification, outlet switching, price override, and approval.
-  * `revenue_manager`: Pricing recommendation review, approval, application, and competitor imports.
-  * `kitchen_ops`: Physical inventory stock audits and recipe costs.
-  * `auditor`: Read-only access to audit trails, performance metrics, and history.
-* **Fail-Closed Startup:** In production (`NODE_ENV=production`), the server aborts startup if `AUTH_SECRET` is missing or shorter than 32 characters.
-* **Rate Limiting:** Protects sensitive login, pricing application, and policy mutation routes.
+- Stable and protected menu items.
+- Items approaching or exceeding configured price-movement limits.
+- Recommendations that need additional review and recommendations blocked by policy.
+- Actual price-change events, dates, actors, and price transitions.
+- Rolling per-item price movement and last actual price-change date.
+- Historical order-volume trends when sufficient daily observations exist.
+- An item-level risk assessment with evidence, period examined, explanation, quality notes, and limitations.
 
----
+### Interpreting the risk assessment
 
-## 5. System Architecture & Tech Stack
+Risk is described as a **pricing-stability risk**. A high or medium rating describes recorded or proposed price movement relative to configured guardrails; it does not estimate a specific customer's likelihood to churn.
 
-```
-┌────────────────────────────────────────────────────────┐
-│                   Vite + React 19 SPA                  │
-│  Three.js WebGL  •  Tailwind CSS v4  •  Lucide Icons   │
-│  Command Palette (⌘K)  •  Operator Role Switcher       │
-└───────────────────────────┬────────────────────────────┘
-                            │ Bearer Token REST (/api/*)
-┌───────────────────────────▼────────────────────────────┐
-│                  Express Server (server.ts)            │
-│  - /api/auth/* (HMAC-SHA256 Token Auth & RBAC Guard)   │
-│  - /api/live, /api/ready, /api/health (Diagnostics)    │
-│  - /api/dashboard/metrics (Chronological Deltas)       │
-│  - /api/recommendations (Approvals & POS Application)  │
-│  - /api/pricing/simulate (Single Financial Model)      │
-│  - /api/forecasting (Holt-Winters Out-of-Sample)       │
-└─────────────┬───────────────────────────┬──────────────┘
-              │                           │
-┌─────────────▼──────────────┐ ┌──────────▼──────────────┐
-│ Deterministic Engine       │ │ Server-Side Gemini API  │
-│ - pricing-engine.ts        │ │ - gemini-2.5-flash      │
-│ - forecasting.ts           │ │ - Contextual Prompting  │
-│ - db.ts (Atomic JSON Store)│ │ - Deterministic Fallback│
-└────────────────────────────┘ └─────────────────────────┘
+The current application does not persist customer identifiers, repeat-customer order sequences, or complaint records. Seeded demonstration order histories are synthetic and are explicitly identified as such. Missing customer or complaint data is shown as a limitation—not filled with invented metrics.
+
+## Pricing Safeguards
+
+The pricing engine and database workflows apply independent policy checks. High demand, competitor benchmarks, or a normal admin override do not supersede mandatory limits.
+
+### Economic floor
+
+For configured discounts and fees, the minimum gross price must cover variable cost and required contribution:
+
+```text
+net multiplier = (1 - discount rate) × (1 - total fee rate)
+economic floor = ceil((variable cost + minimum contribution) / net multiplier)
+effective floor = max(economic floor, item minimum policy price)
 ```
 
----
+The final rounded proposal is checked against the effective floor, the item policy ceiling, and applicable price-movement rules. If the applicable bounds cannot all be satisfied, the proposal is explicitly blocked.
 
-## 6. API Endpoints
+### Stability controls
 
-### Authentication & Diagnostics
+Manager-configurable settings include:
+
+| Setting | Purpose |
+|---|---|
+| Maximum increase per change | Caps a proposed upward movement from the current applied price. |
+| Maximum decrease per change | Caps a proposed downward movement. |
+| Minimum days between changes | Prevents repeated changes from actual price events inside the interval. |
+| Rolling cumulative increase limit | Limits accumulated increases within a configurable rolling period. |
+| Trust-risk review threshold | Flags large or limit-approaching proposals for manager attention. |
+| Protected items and categories | Holds selected menu prices stable. |
+| Loyalty-price protection | Optionally protects every item from price changes. |
+
+Rolling checks use persisted price changes, not recommendation cycles. Historical change percentages are evaluated using the recorded transition sequence so repeated small changes cannot avoid the configured cap.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Operator[Restaurant operator] --> UI[React and TypeScript application]
+    UI --> API[Express REST API]
+    API --> Auth[Signed-token authentication and role checks]
+    API --> Pricing[Deterministic pricing and policy validation]
+    API --> Forecast[Demand forecasting]
+    API --> Store[Atomic JSON persistence]
+    Pricing --> Store
+    Forecast --> Store
+    Store --> History[Actual price-change and audit history]
+    History --> Trust[Customer Trust and Pricing Health API]
+    Trust --> UI
+    API --> Gemini[Optional server-side Gemini advice]
+    Gemini -. Advisory only .-> UI
+```
+
+The Express server serves the Vite application in development and serves the built frontend in production mode. Pricing rules are implemented in the existing pricing engine and persistence/service layer rather than in a second pricing system.
+
+## Technology Stack
+
+| Area | Technologies |
+|---|---|
+| Frontend | React 19, TypeScript, Vite |
+| Styling and interaction | Tailwind CSS 4, Lucide, GSAP, Motion |
+| Immersive visuals | Three.js |
+| Backend | Node.js, Express, TypeScript (`tsx`) |
+| Persistence | Atomic JSON file storage with schema migration |
+| Authentication | HMAC-SHA256 signed session tokens and role-based access control |
+| Forecasting | Deterministic Holt-Winters implementation with held-out validation |
+| Optional AI advisory | Google Gemini via `@google/genai` |
+| Tests | TypeScript release-gate suites run with `tsx` |
+
+## Application Areas
+
+| Area | What it covers |
+|---|---|
+| Command Center | Revenue and contribution indicators, alerts, and review queue. |
+| Pricing & Margins | Explainable recommendations, warnings, approvals, and applications. |
+| Menu Intelligence | Menu catalog, costs, item economics, and authorized price overrides. |
+| Competitor Intelligence | Competitor observations, portion-aware matches, and imports. |
+| What-If Prices | Scenario exploration for price, contribution, and demand assumptions. |
+| Busy-Day Forecast | Menu-item demand projections and validation status. |
+| Inventory & Food Cost | Stock levels, adjustments, and low-stock monitoring. |
+| Assistants | Operational agent status and recommendation-cycle controls. |
+| Customer Trust | Actual price stability, movement history, risk evidence, and limitations. |
+| History | Auditable approvals, changes, blocks, and policy actions. |
+| Rules & Settings | Pricing boundaries, rolling limits, protected items, and outlet settings. |
+
+## API Reference
+
+All routes use the same-origin `/api` prefix. Read routes are available without an operator token in the current demo configuration; protected actions require a valid signed token and the role listed below.
+
+### Authentication and service status
+
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `POST` | `/api/auth/login` | Public | Authenticates credentials or demo role; returns signed JWT |
-| `GET` | `/api/auth/session` | Public | Verifies token and returns authenticated operator identity |
-| `GET` | `/api/auth/demo-accounts` | Public | Returns available evaluation profiles for UI role switching |
-| `GET` | `/api/live` | Public | Service liveness ping |
-| `GET` | `/api/ready` | Public | Persistence readiness verification |
-| `GET` | `/api/health` | Public | Detailed storage, integration, and pricing health diagnostics |
+| `POST` | `/api/auth/login` | Public | Authenticate or select a configured demo role; returns a signed session token. |
+| `GET` | `/api/auth/session` | Optional token | Validate a token and return the current operator identity. |
+| `GET` | `/api/auth/demo-accounts` | Public | List available role profiles for the local demonstration UI. |
+| `GET` | `/api/live` | Public | Liveness check. |
+| `GET` | `/api/ready` | Public | Readiness and storage check. |
+| `GET` | `/api/health` | Public | Health, persistence, and service diagnostics. |
 
-### Revenue & Pricing Operations
+### Pricing, trust, and governance
+
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/dashboard/metrics` | Public | 30-day revenue, contribution margin, and genuine historical deltas |
-| `GET` | `/api/recommendations` | Public | Dynamic pricing recommendation queue |
-| `POST` | `/api/recommendations/:id/approve` | `admin`, `revenue_manager` | Approves recommendation (requires flag if step breached) |
-| `POST` | `/api/recommendations/:id/apply` | `admin`, `revenue_manager` | Applies price change with economic floor re-verification |
-| `POST` | `/api/recommendations/:id/reject` | `admin`, `revenue_manager` | Rejects recommendation with audited business rationale |
-| `POST` | `/api/recommendations/regenerate` | `admin`, `revenue_manager` | Triggers deterministic recalculation cycle |
-| `POST` | `/api/pricing/simulate` | Public | Elasticity scenario sandbox using standard financial model |
-| `POST` | `/api/menu/:id/override-price` | `admin` | Manual price override enforcing economic floor with fees |
+| `GET` | `/api/dashboard/metrics` | Public | Dashboard metrics derived from available persisted sales data. |
+| `GET` | `/api/recommendations` | Public | Current and historical recommendation records. |
+| `POST` | `/api/recommendations/regenerate` | Admin, revenue manager | Generate a new deterministic recommendation cycle. |
+| `POST` | `/api/recommendations/:id/approve` | Admin, revenue manager | Approve after revalidating current policies. |
+| `POST` | `/api/recommendations/:id/apply` | Admin, revenue manager | Apply an approved price after revalidation and record actual history. |
+| `POST` | `/api/recommendations/:id/reject` | Admin, revenue manager | Reject with an audited rationale. |
+| `POST` | `/api/menu/:id/override-price` | Admin | Apply a manual price that still passes mandatory limits. |
+| `GET` | `/api/customer-trust` | Public | Return real persisted pricing-stability assessments and actual changes. |
+| `GET` | `/api/audit` | Public | Read the audit event history. |
+| `GET` | `/api/policy` | Public | Read the active pricing policy. |
+| `PUT` | `/api/policy` | Admin, revenue manager | Validate, persist, and audit pricing policy updates. |
+| `POST` | `/api/pricing/simulate` | Public | Calculate a price scenario; does not apply a price. |
 
-### Menu, Catalog & Operations
+### Menu and operations
+
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/menu` | Public | Full menu catalog with cost breakdown and margins |
-| `POST` | `/api/menu` | `admin`, `revenue_manager` | Create new menu item SKU with floor validation |
-| `PUT` | `/api/menu/:id` | `admin`, `revenue_manager` | Update item prices, costs, or descriptions |
-| `GET` | `/api/competitors` | Public | Location-scoped competitor directory |
-| `GET` | `/api/competitors/observations` | Public | Competitor dish price observations with provenance |
-| `POST` | `/api/competitors/observations` | `admin`, `revenue_manager` | Record new manual audit observation |
-| `POST` | `/api/competitors/import-menu` | `admin`, `revenue_manager` | Ingest competitor dish rows via CSV/spreadsheet |
-| `GET` | `/api/forecasting` | Public | Holt-Winters forward demand forecast with MAE/RMSE |
-| `GET` | `/api/inventory` | Public | Ingredient stock levels and reorder thresholds |
-| `PUT` | `/api/inventory/:id/adjust` | `admin`, `kitchen_ops` | Physical stock adjustment audit |
-| `GET` | `/api/audit` | Public | Immutable audit log of all operations |
-| `PUT` | `/api/policy` | `admin` | Configure pricing boundaries, rounding, and floors |
+| `GET` | `/api/menu` | Public | Read menu catalog and item economics. |
+| `POST` | `/api/menu` | Admin, revenue manager | Add a menu item. |
+| `PUT` | `/api/menu/:id` | Admin, revenue manager | Update menu item details and costs. |
+| `GET` | `/api/competitors` | Public | Read competitor records. |
+| `GET` | `/api/competitors/observations` | Public | Read observations and provenance. |
+| `POST` | `/api/competitors/observations` | Admin, revenue manager | Add a manual competitor observation. |
+| `POST` | `/api/competitors/import-menu` | Admin, revenue manager | Import competitor menu rows. |
+| `GET` | `/api/matches` | Public | Read normalized menu matches. |
+| `PUT` | `/api/matches/:id` | Admin, revenue manager | Update a match review status. |
+| `GET` | `/api/forecasting` | Public | Read demand forecasts; optionally filter by item ID. |
+| `GET` | `/api/inventory` | Public | Read inventory and alert state. |
+| `PUT` | `/api/inventory/:id/adjust` | Admin, kitchen ops | Record an inventory adjustment. |
+| `GET` | `/api/outlets` | Public | Read outlet configuration. |
+| `POST` | `/api/outlets/switch` | Admin | Change the active outlet. |
+| `GET` | `/api/agents` | Public | Read assistant status. |
+| `POST` | `/api/agents/run-cycle` | Admin, revenue manager | Run an operational recommendation cycle. |
+| `POST` | `/api/ai/strategic-advice` | Public | Request optional server-side advisory text. |
 
----
+## Getting Started
 
-## 7. Verification & Test Suite
+### Requirements
 
-The repository includes an automated enterprise test suite covering 99 test cases across 3 specialized suites:
+- Node.js and npm compatible with the versions in `package-lock.json`.
+- Git, if cloning the repository.
+- A Gemini API key is optional; core pricing, persistence, and forecasting do not depend on it.
+
+### Install and run locally
 
 ```bash
-# 1. Run full release gate test suite (99/99 tests)
-npm test
-
-# 2. Run TypeScript compiler type-check
-npm run lint
-
-# 3. Build production bundle
-npm run build
-
-# 4. Start full-stack development server
+git clone https://github.com/Mateenjr7/Restaurant-IQ.git
+cd Restaurant-IQ
+npm ci
 npm run dev
 ```
 
-### Test Coverage Breakdown
-* **Pricing Engine Tests (55/55 passed):** Economic floor bounds, cost shocks, step movement limit clipping, policy ceiling conflicts, rounding invariants, negative costs/prices, platform commissions, net margin denominators, candidate price consistency, promotional discounts, and non-finite number validation.
-* **Demand Forecasting Tests (15/15 passed):** Holt-Winters 7-day forward horizon, out-of-sample held-out split residual evaluation, MAE and RMSE invariants ($RMSE \ge MAE$), insufficient data handling, and prediction intervals.
-* **Persistence & Security Tests (29/29 passed):** Disk storage health, restart survival, blocked recommendation prohibition, step override enforcement, economic floor revalidation at application time, HMAC-SHA256 token verification, tampered token rejection, expired token rejection, and role permission matrix enforcement.
+Open [http://localhost:3000](http://localhost:3000). The application initializes local demonstration data under `data/` on first server start. That runtime data is intentionally ignored by Git.
 
----
+### Run checks
 
-## 8. Data Provenance & Demonstration Disclosure
+```bash
+npm test
+npm run lint
+npm run build
+```
 
-RestaurantIQ clearly distinguishes between data sources across all views:
-1. **Verified In-Person Audits:** Physical observations recorded by restaurant operators.
-2. **Imported CSV Menus:** Operator-uploaded competitor menus with portion weights.
-3. **Seeded Demonstration Datasets:** Explicitly marked sample data used to showcase multi-outlet scenarios, seasonal demand spikes, and cost inflation shocks.
-4. **Emulated POS Feed:** Toast POS terminal feed emulated in safe demo mode without requiring live external cloud credentials.
-5. **No Unauthorized Web Scraping:** The system does not bypass CAPTCHAs, simulate live Swiggy/Zomato feeds, or violate terms of third-party platforms.
+## Environment Configuration
+
+Use `.env.example` as the template for local configuration. Do not commit `.env` files, API keys, or production secrets.
+
+| Variable | Required | Description |
+|---|---:|---|
+| `PORT` | No | Express server port; defaults to `3000`. |
+| `AUTH_SECRET` | Production | HMAC signing secret; production requires at least 32 characters. Development generates an ephemeral secret if omitted. |
+| `GEMINI_API_KEY` | No | Enables the optional server-side Gemini advisory feature. |
+| `APP_URL` | No | Application origin used in deployment configuration. |
+| `ALLOWED_ORIGINS` | No | Comma-separated CORS origin allowlist. |
+
+Never use the example secret or example API-key values in a real deployment. Supply production values through the hosting platform's secret manager.
+
+## Testing
+
+The release-gate suite currently runs **118 assertions** across four suites:
+
+| Suite | Assertions | Coverage |
+|---|---:|---|
+| Pricing engine | 55 | Economic floor, rounding, ceiling conflicts, movement boundaries, fees, discounts, and invalid inputs. |
+| Forecasting | 15 | Forecast horizon, held-out metrics, prediction intervals, and insufficient-history behavior. |
+| Persistence and security | 29 | Persistence, restart behavior, approvals, application checks, overrides, token validation, and role permissions. |
+| Customer trust | 19 | Directional caps, rolling accumulation, windows, minimum spacing, protected prices, staleness, duplicate applications, audit, and persistence. |
+
+```bash
+npm test        # Run all four suites
+npm run lint    # TypeScript check (tsc --noEmit)
+npm run build   # Production frontend build
+```
+
+## Data, Privacy & Limitations
+
+- The application persists local menu, policy, recommendation, audit, and price-change data in `data/restaurantiq-data.json`; this runtime file is not included in the repository.
+- Existing older supported data schemas are migrated with defaults for newly introduced policy settings.
+- Newly recorded changes form the verified price-history basis. A legacy item's `lastUpdated` timestamp is not assumed to prove a price change.
+- Seeded sales and competitor examples are demonstration data and must not be presented as verified live data.
+- There is no persisted customer identity, customer-level repeat-visit series, or complaint dataset. Customer retention conclusions are therefore unavailable.
+- The configured POS integration is demonstration/emulated unless separately connected to a real provider. Do not assume that a local application has changed an external POS.
+- Competitor information depends on the observations and imports supplied to the application; no live third-party feed is guaranteed.
+- This software provides operator decision support. Restaurant operators remain responsible for checking data accuracy and approving real-world price changes.
+
+## Repository Layout
+
+```text
+.
+├── server.ts                         # Express API and application startup
+├── server/
+│   ├── auth.ts                       # Signed sessions and role authorization
+│   ├── db.ts                         # Persistence, policies, workflows, audit
+│   ├── forecasting.ts                # Demand forecasts and validation
+│   ├── gemini.ts                     # Optional server-side AI advisory
+│   ├── pricing-engine.ts             # Deterministic pricing and stability rules
+│   ├── seed-data.ts                  # Clearly identified demo data
+│   └── types.ts                      # Shared backend domain types
+├── src/
+│   ├── App.tsx                       # Navigation, API integration, application shell
+│   ├── components/                   # Shared UI and interactive components
+│   ├── landing/                      # Immersive entry experience
+│   └── views/                        # Dashboard, pricing, operations, trust, settings
+├── data/                             # Local persisted data (generated; git-ignored)
+├── public/assets/                    # Public visual assets
+├── test-all.ts                       # Combined release gate
+├── test-customer-trust.ts            # Customer trust and price policy tests
+├── test-forecasting.ts               # Forecasting tests
+├── test-persistence-security.ts      # Persistence and authentication tests
+└── test-pricing-engine.ts            # Pricing-engine tests
+```
+
+## Production Notes
+
+- Build the frontend with `npm run build`; the output is written to `dist/`.
+- Set `NODE_ENV=production`, a secure `AUTH_SECRET`, and the intended `PORT` in the deployment environment before starting the Express server.
+- Configure TLS termination, allowed origins, durable storage/backup, monitoring, and a real POS integration as appropriate for the target deployment.
+- The repository contains a local development setup; a public production deployment is not implied by the presence of a GitHub repository.
+- Review the application-specific data disclosure and demo-mode behavior before connecting live business data.
