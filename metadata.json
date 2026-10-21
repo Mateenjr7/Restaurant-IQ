@@ -1,0 +1,6 @@
+{
+  "name": "RestaurantIQ — Dynamic Pricing & Intelligence Engine",
+  "description": "Enterprise-grade restaurant intelligence and dynamic pricing engine with verified Holt-Winters demand forecasting, economic margin protection, and multi-channel compliance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
