@@ -4,11 +4,13 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { db } from './server/db.ts';
+import { postgresStore } from './server/postgres-store.ts';
+import { postgresRequestMiddleware } from './server/postgres-request-middleware.ts';
 import { calculateDynamicPrice } from './server/pricing-engine.ts';
 import { generateDemandForecast, getAllDemandForecasts } from './server/forecasting.ts';
 import { generateStrategicAdvice } from './server/gemini.ts';
@@ -22,8 +24,6 @@ import {
   ROLE_PERMISSIONS,
   UserRole,
 } from './server/auth.ts';
-
-dotenv.config();
 
 // Ensure auth secret is validated at startup (fails closed if production secret is insecure)
 initializeAuthSecret();
@@ -81,7 +81,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     : " 'unsafe-inline' 'unsafe-eval'";
   res.setHeader(
     'Content-Security-Policy',
-    `default-src 'self'; script-src 'self'${developmentScriptSources}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self'${developmentWebSocketSources};`
+    `default-src 'self'; script-src 'self'${developmentScriptSources}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self'${developmentWebSocketSources};`
   );
 
   if (req.method === 'OPTIONS') {
@@ -208,21 +208,29 @@ app.get('/api/live', (req: Request, res: Response) => {
   });
 });
 
-// Readiness check (checks persistence disk availability)
-app.get('/api/ready', (req: Request, res: Response) => {
-  const storageHealth = db.getStorageHealth();
-  const isReady = storageHealth.status === 'healthy';
-  res.status(isReady ? 200 : 503).json({
-    status: isReady ? 'ready' : 'not_ready',
-    persistedToDisk: storageHealth.persistedToDisk,
-    schemaVersion: storageHealth.schemaVersion,
-    timestamp: new Date().toISOString(),
-  });
+// Readiness checks database availability; liveness remains independent.
+app.get('/api/ready', async (_req: Request, res: Response) => {
+  try {
+    await postgresStore.health();
+    res.json({
+      status: 'ready',
+      storage: 'postgresql',
+      timestamp: new Date().toISOString(),
+    });
+  } catch {
+    res.status(503).json({
+      status: 'not_ready',
+      storage: 'postgresql',
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
+app.use(postgresRequestMiddleware);
+
 // Diagnostic Health check
-app.get('/api/health', requireRole(['admin', 'revenue_manager', 'auditor']), (req: Request, res: Response) => {
-  const storageHealth = db.getStorageHealth();
+app.get('/api/health', requireRole(['admin', 'revenue_manager', 'auditor']), async (req: Request, res: Response) => {
+  const storageHealth = await postgresStore.health();
   const apiKeyConfigured = Boolean(
     process.env.GEMINI_API_KEY &&
       process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY' &&
@@ -230,18 +238,14 @@ app.get('/api/health', requireRole(['admin', 'revenue_manager', 'auditor']), (re
   );
 
   res.json({
-    status: storageHealth.status === 'healthy' ? 'healthy' : 'degraded',
+    status: 'healthy',
     service: 'RestaurantIQ Dynamic Pricing & Intelligence Engine',
     version: db.schemaVersion,
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
     database: {
       status: storageHealth.status,
-      persistedToDisk: storageHealth.persistedToDisk,
-      filePath: storageHealth.filePath,
-      fileSizeBytes: storageHealth.fileSizeBytes,
-      schemaVersion: storageHealth.schemaVersion,
-      lastSavedAt: storageHealth.lastSavedAt,
+      storage: storageHealth.driver,
       counts: storageHealth.counts,
     },
     integrations: {
@@ -910,7 +914,7 @@ app.post('/api/ai/strategic-advice', requireRole(['admin', 'revenue_manager']), 
 
 // Global Safe Error Handler (Never leaks internal stack traces or internal filesystem paths)
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  console.error('[SERVER ERROR CAUGHT]:', err.message || err);
+  console.error('[SERVER ERROR CAUGHT]: request failed');
   if (res.headersSent) {
     return next(err);
   }
@@ -922,6 +926,11 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 
 // Mount Vite or static assets
 async function startServer() {
+  if (process.env.PERSISTENCE_MODE !== 'postgres') {
+    throw new Error('PERSISTENCE_MODE must be set to postgres; JSON persistence is not available in application runtime.');
+  }
+  await postgresStore.initialize(db);
+
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (req: Request, res: Response) => {
@@ -936,12 +945,21 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 RestaurantIQ Core Server listening on http://0.0.0.0:${PORT}`);
   });
+  const shutdown = () => {
+    httpServer.close(() => {
+      void postgresStore.close().catch(() => {
+        console.error('PostgreSQL pool shutdown failed.');
+      });
+    });
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 startServer().catch((err) => {
-  console.error('Fatal server startup error:', err);
+  console.error('Fatal server startup error:', err instanceof Error ? err.message : 'Unknown startup failure');
   process.exit(1);
 });

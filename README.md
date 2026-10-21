@@ -52,7 +52,7 @@ The experience combines an immersive product entry page with an operational comm
 - **Competitor intelligence:** Stores observations and provenance, normalizes matched prices for portion size, and scopes competitor information by outlet location.
 - **Governance and audit:** Captures approvals, applications, rejections, manual overrides, policy updates, and blocked recommendation events.
 - **Authenticated roles:** Server-verified signed tokens govern administrator, revenue manager, kitchen operations, and auditor capabilities.
-- **Persistent local state:** Uses atomic JSON writes and upgrades existing data files while retaining compatibility with earlier supported schemas.
+- **PostgreSQL persistence:** Stores operational state in Supabase PostgreSQL; JSON files remain local migration inputs and are not an application fallback.
 - **Responsive premium interface:** React, Three.js, Tailwind CSS, charts, and motion-enhanced views preserve the established RestaurantIQ visual style.
 
 ## Customer Trust & Pricing Health
@@ -116,7 +116,7 @@ flowchart TD
     API --> Auth[Signed-token authentication and role checks]
     API --> Pricing[Deterministic pricing and policy validation]
     API --> Forecast[Demand forecasting]
-    API --> Store[Atomic JSON persistence]
+    API --> Store[Supabase PostgreSQL repositories]
     Pricing --> Store
     Forecast --> Store
     Store --> History[Actual price-change and audit history]
@@ -136,7 +136,7 @@ The Express server serves the Vite application in development and serves the bui
 | Styling and interaction | Tailwind CSS 4, Lucide, GSAP, Motion |
 | Immersive visuals | Three.js |
 | Backend | Node.js, Express, TypeScript (`tsx`) |
-| Persistence | Atomic JSON file storage with schema migration |
+| Persistence | Supabase PostgreSQL via the restricted Express runtime role |
 | Authentication | HMAC-SHA256 signed session tokens and role-based access control |
 | Forecasting | Deterministic Holt-Winters implementation with held-out validation |
 | Optional AI advisory | Google Gemini via `@google/genai` |
@@ -253,9 +253,45 @@ Use `.env.example` as the template for local configuration. Do not commit `.env`
 
 Never use the example secret or example API-key values in a real deployment. Supply production values through the hosting platform's secret manager.
 
+## Supabase PostgreSQL migration preparation
+
+The Express application uses Supabase PostgreSQL as its authoritative runtime persistence. The existing JSON primary and backup are preserved locally and were not imported because the snapshot contains synthetic/demo data.
+
+- [`supabase/migrations/202610220001_initial_restaurantiq_schema.sql`](./supabase/migrations/202610220001_initial_restaurantiq_schema.sql) defines relational tables and constraints, uses exact `NUMERIC` columns for persisted money, enables RLS, and grants backend access only through the `restaurantiq_app` non-login role.
+- [`scripts/migrate-postgres.ts`](./scripts/migrate-postgres.ts) applies versioned SQL under a PostgreSQL advisory lock and checksum-verified migration ledger. It is dry-run by default and checks that an apply connection identifies the configured project.
+- [`scripts/provision-runtime-role.ts`](./scripts/provision-runtime-role.ts) provisions the separate, restricted `restaurantiq_runtime` login using the migration connection and `RUNTIME_DB_PASSWORD`. It requires `--apply`; without it, it prints a plan and does not connect.
+- [`scripts/import-json-to-postgres.ts`](./scripts/import-json-to-postgres.ts) reads only the authoritative `data/restaurantiq-data.json` snapshot, validates the schema and relationships before opening a transaction, never overwrites conflicting rows, and records a source checksum for retry detection. It is dry-run by default, uses `MIGRATION_DATABASE_URL` only when explicitly called with `--apply`, and does not delete source files. A snapshot identified as containing synthetic/demo data requires explicit `--include-demo-data`.
+
+### Schema scope and access model
+
+Tables cover restaurants, outlets, policy settings and protected prices, menu items and daily sales, competitors and observations, menu matches, inventory and item links, recommendations, actual price changes, audit events, agent executions, and JSON import batches. Forecasts are currently computed from daily sales at request time and are not persisted; there is no persisted customer directory or complaint store. Users and memberships are also not database entities in the current app: Express verifies its own HMAC session token and enforces roles. Do not treat the prepared database layer as a replacement for that authentication.
+
+The `restaurantiq_app` role is `NOLOGIN`, cannot create objects or bypass RLS, and receives CRUD only on editable application entities. Applied price history and audit records are append-only (SELECT/INSERT); import-batch tracking is SELECT/INSERT/UPDATE. The separate `restaurantiq_runtime` login is intended for Express and inherits that role. Its RLS policy allows the trusted backend role to access application rows; per-user authorization remains in Express. `PUBLIC`, `anon`, `authenticated`, and `service_role` are explicitly revoked from the application tables and import sequence. Service-role keys are not used by these server scripts.
+
+### Local setup and safe execution sequence
+
+1. Keep connection strings and passwords only in the ignored local `.env`; never use `VITE_` or `NEXT_PUBLIC_` names for server-only credentials. `.env.example` documents `PERSISTENCE_MODE`, `MIGRATION_DATABASE_URL`, `RUNTIME_DB_PASSWORD`, `DATABASE_URL`, and `SUPABASE_CA_CERT_PATH` with placeholders.
+   - Download the database CA certificate from the Supabase Dashboard under **Database Settings → SSL Configuration** and save it locally as `certs/prod-ca-2021.crt`, or set `SUPABASE_CA_CERT_PATH` to its local path. The downloaded certificate is ignored by Git. Database scripts validate it and use it with certificate-chain and hostname verification enabled; SSL options in database URL query strings are rejected.
+   - See [Supabase SSL enforcement and certificate verification](https://supabase.com/docs/guides/platform/ssl-enforcement) for the supported CA certificate and connection guidance.
+2. `MIGRATION_DATABASE_URL` must be a privileged project database connection used only for schema/import/provisioning commands. Set a unique printable `RUNTIME_DB_PASSWORD` (24–256 characters). After role provisioning, set `DATABASE_URL` to the connection string for `restaurantiq_runtime`; do not use the migration owner for application requests.
+3. Review the migration SQL before applying it. It assumes Supabase's standard `anon`, `authenticated`, and `service_role` roles. `npm run db:migrate` is an offline dry-run; `npm run db:migrate -- --apply` applies the checksummed migration and records it in the ledger. Do not separately run the SQL Editor and then the runner, because the runner owns the migration ledger.
+4. After the schema migration succeeds, run `npm run db:provision-runtime-role -- --apply` to create or verify the restricted login and its effective privileges.
+5. Review the JSON import dry-run first with `npm run db:import-json`. Synthetic/demo data is intentionally refused unless explicitly acknowledged. Import only after separately deciding which current local records are appropriate for the target project, using `npm run db:import-json -- --apply --include-demo-data` when the snapshot is synthetic. Existing conflicting rows abort the complete transaction; the importer does not update or overwrite them.
+6. Verify imported counts and relationships before switching application runtime. Keep a separate verified backup of the original `data/` files. The importer never deletes JSON.
+
+The initial schema migration and restricted runtime role have been applied and independently verified. JSON has not been imported. The Express application requires `PERSISTENCE_MODE=postgres`, loads its state from the runtime role, and has no production JSON fallback.
+
+### Runtime persistence
+
+API requests refresh the shared in-memory domain model from PostgreSQL while holding a transaction-scoped lock. The existing domain services still operate on that shared model, but persistence compares before/after state and sends parameterized upserts only for changed rows. Protected-price sets and inventory/menu links use key-scoped deletes; append-only price and audit history insert only new events. A transaction-scoped PostgreSQL advisory lock serializes business mutations across Express processes; a process-local queue additionally protects the shared in-memory model. All SQL for a successful mutation commits before its response is sent. Failed mutations restore the prior in-memory state, roll back, and return a sanitized error. The runtime role uses strict CA-chain and hostname verification, and the application does not fall back to JSON.
+
+This is a single-restaurant application: the backend binds persistence to the configured `restaurantiq-primary` workspace and does not currently authenticate database-backed tenant memberships. Client-supplied restaurant identifiers are ignored. RLS restricts database access to the trusted backend role; it does not provide per-user or multi-tenant isolation.
+
+Keep `MIGRATION_DATABASE_URL` in the local environment only for explicit administrative scripts. Normal Express requests use `DATABASE_URL` authenticated as `restaurantiq_runtime`. Do not import the synthetic snapshot; any genuine-data import requires a separately reviewed and approved source.
+
 ## Testing
 
-The release-gate suite currently runs **131 assertions** across four suites:
+The unit release-gate suite currently runs **131 assertions** across four suites:
 
 | Suite | Assertions | Coverage |
 |---|---:|---|
@@ -270,9 +306,29 @@ npm run lint    # TypeScript check (tsc --noEmit)
 npm run build   # Production frontend build
 ```
 
+For isolated PostgreSQL concurrency and runtime-role checks, use a **disposable, empty development database**. In two PowerShell terminals start API processes on separate ports with `PERSISTENCE_MODE=postgres` already configured in `.env`:
+
+```powershell
+$env:PORT="3121"; npm run dev
+$env:PORT="3122"; npm run dev
+```
+
+The write-capable integration suite requires an independently provisioned disposable database. Never use the shared application database. The runner accepts only an explicit `TEST_DATABASE_URL`; it refuses to fall back to `DATABASE_URL`, requires `RESTAURANTIQ_TEST_DATABASE_DISPOSABLE=true`, and rejects targets that identify as the configured runtime or migration endpoint. For local PostgreSQL, create a dedicated `restaurantiq_test` database and `restaurantiq_test` login with access only to that database, then apply the reviewed schema to that database. For a remote Supabase test project, use a separate disposable project and its restricted runtime login; remote TLS continues to require the configured CA and hostname validation. The disposable flag is an operator attestation, not proof that a remote project is safe.
+
+Start each local API process in a separate terminal with `DATABASE_URL` set to the disposable target (never the normal `.env` runtime URL), `TEST_DATABASE_URL` set to the exact same target, and `RESTAURANTIQ_TEST_DATABASE_DISPOSABLE=true`. This explicit non-production mode is rejected under `NODE_ENV=production`; it retains strict CA and hostname validation. For local PostgreSQL, set `SUPABASE_CA_CERT_PATH` to the local test CA that signed the server certificate. In a third terminal, keep `DATABASE_URL` and `MIGRATION_DATABASE_URL` at their normal configured values, set the explicit test target and marker, and run:
+
+```powershell
+$env:TEST_DATABASE_URL="<set locally to the disposable PostgreSQL URL; do not commit or share it>"
+$env:RESTAURANTIQ_TEST_DATABASE_DISPOSABLE="true"
+$env:RESTAURANTIQ_TEST_API_URLS="http://127.0.0.1:3121,http://127.0.0.1:3122"
+npm run db:integration
+```
+
+The suite also requires valid configured `DATABASE_URL` and `MIGRATION_DATABASE_URL` values so it can reject a matching target; it never uses those values to connect. The API processes must use the disposable `TEST_DATABASE_URL` independently, because the runner cannot inspect their process environments. The suite refuses non-empty application schemas and production mode, exercises cross-process menu creates/updates, runtime-role restrictions, invalid input, and transaction rollback, then removes only its uniquely identified test rows. Its cleanup safeguards do not make a shared database safe. `npm run test:postgres-target` validates target-guard behavior offline; `npm run test:postgres-middleware` runs simulated transaction lifecycle checks with no PostgreSQL connection. `npm run db:verify` is read-only and checks the catalog and direct access restrictions.
+
 ## Data, Privacy & Limitations
 
-- The application persists local menu, policy, recommendation, audit, and price-change data in `data/restaurantiq-data.json`; this runtime file is not included in the repository.
+- The application persists menu, policy, recommendation, audit, and price-change state in PostgreSQL. Existing `data/` JSON files are retained as local migration inputs/backups; production startup requires PostgreSQL and has no JSON fallback.
 - Existing older supported data schemas are migrated with defaults for newly introduced policy settings.
 - Newly recorded changes form the verified price-history basis. A legacy item's `lastUpdated` timestamp is not assumed to prove a price change.
 - Seeded sales and competitor examples are demonstration data and must not be presented as verified live data.
@@ -295,6 +351,9 @@ npm run build   # Production frontend build
 │   ├── pricing-engine.ts             # Deterministic pricing and stability rules
 │   ├── seed-data.ts                  # Clearly identified demo data
 │   └── types.ts                      # Shared backend domain types
+├── supabase/
+│   └── migrations/                   # Versioned PostgreSQL schema migrations
+├── scripts/                          # Explicit database import/provisioning tools
 ├── src/
 │   ├── App.tsx                       # Navigation, API integration, application shell
 │   ├── components/                   # Shared UI and interactive components
@@ -315,7 +374,8 @@ npm run build   # Production frontend build
 - Set `NODE_ENV=production`, a secure `AUTH_SECRET`, the intended `PORT`, `APP_URL`, and exact `ALLOWED_ORIGINS` in the deployment environment.
 - Production login deliberately rejects seeded demo accounts and role switching. This repository does not yet include a production user directory or external identity-provider integration; do not expose it as an authenticated production service until that is configured.
 - Detailed business and audit APIs require an authenticated, authorized role. Liveness and readiness endpoints return only operational status.
-- JSON persistence keeps a rolling previous-state backup. If neither the primary file nor backup can be parsed, startup fails rather than replacing potentially recoverable data with seed values.
+- Set `PERSISTENCE_MODE=postgres`, the restricted-runtime `DATABASE_URL`, and `SUPABASE_CA_CERT_PATH`; startup fails if PostgreSQL configuration or connectivity is invalid.
+- The PostgreSQL adapter currently serializes application API work because existing domain services share one in-memory model. Row-level delta writes avoid rewriting unrelated records, but this serialization and full-state hydration are not a high-throughput architecture.
 - Configure TLS termination, allowed origins, durable storage/backup, monitoring, and a real POS integration as appropriate for the target deployment.
 - The repository contains a local development setup; a public production deployment is not implied by the presence of a GitHub repository.
 - Review the application-specific data disclosure and demo-mode behavior before connecting live business data.

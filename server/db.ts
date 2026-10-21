@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -33,10 +34,10 @@ import {
   initialAuditEvents,
 } from './seed-data.ts';
 
-const DB_FILE = path.resolve(process.cwd(), 'data', 'restaurantiq-data.json');
-const BACKUP_FILE = path.resolve(process.cwd(), 'data', 'backup-restaurantiq-v1.2.0.json');
+const DB_FILE = path.resolve(process.env.RESTAURANTIQ_DATA_FILE || path.join(process.cwd(), 'data', 'restaurantiq-data.json'));
+const BACKUP_FILE = path.resolve(process.env.RESTAURANTIQ_BACKUP_FILE || path.join(process.cwd(), 'data', 'backup-restaurantiq-v1.2.0.json'));
 
-interface PersistedDatabaseState {
+export interface PersistedDatabaseState {
   schemaVersion: string;
   lastSavedAt: string;
   outlets: RestaurantOutlet[];
@@ -72,6 +73,7 @@ export interface StorageHealth {
 export class RestaurantDatabase {
   private readonly dataFile: string;
   private readonly backupFile: string;
+  private readonly memoryOnly: boolean;
   public schemaVersion: string = '1.5.0';
   public lastSavedAt: string | null = null;
   public isHydratedFromDisk: boolean = false;
@@ -93,10 +95,51 @@ export class RestaurantDatabase {
   private lastPersistedState: PersistedDatabaseState | null = null;
   private recoveredFromBackup = false;
 
-  constructor(dataFile = DB_FILE, backupFile = BACKUP_FILE) {
+  constructor(
+    dataFile = DB_FILE,
+    backupFile = BACKUP_FILE,
+    options: { memoryOnly?: boolean } = {},
+  ) {
     this.dataFile = dataFile;
     this.backupFile = backupFile;
+    this.memoryOnly = options.memoryOnly ?? false;
+    if (this.memoryOnly) {
+      this.outlets = [];
+      this.menuMatches = [];
+      this.policy = {
+        ...initialPolicy,
+        restaurantName: 'Restaurant',
+        activeOutletId: '',
+        protectedMenuItemIds: [],
+        protectedCategories: [],
+        posIntegration: {
+          ...initialPolicy.posIntegration,
+          provider: 'Manual',
+          status: 'demo_mode',
+        },
+      };
+      this.menuItems = [];
+      this.competitors = [];
+      this.observations = [];
+      this.inventory = [];
+      this.agents = [];
+      this.auditEvents = [];
+      this.recommendations = [];
+      this.priceChanges = [];
+      return;
+    }
     this.initDatabase();
+  }
+
+  public replaceState(state: PersistedDatabaseState) {
+    this.restorePersistedState(state);
+    this.isHydratedFromDisk = true;
+  }
+
+  public snapshotState(): PersistedDatabaseState {
+    return JSON.parse(JSON.stringify(
+      this.toPersistedState(this.lastSavedAt || new Date().toISOString())
+    )) as PersistedDatabaseState;
   }
 
   /**
@@ -230,6 +273,7 @@ export class RestaurantDatabase {
    * Atomic, durable write to disk using temporary file replacement
    */
   public saveToDisk(): void {
+    if (this.memoryOnly) return;
     let tmpFile: string | undefined;
     let backupTmpFile: string | undefined;
     try {
@@ -591,6 +635,10 @@ export class RestaurantDatabase {
   }
 
   public generateInitialRecommendations() {
+    if (this.menuItems.length === 0) {
+      this.recommendations = [];
+      return;
+    }
     const candidateItemIds = ['item-1', 'item-2', 'item-3', 'item-4', 'item-5', 'item-6', 'item-13'];
     const activeOutlet = this.outlets.find((o) => o.id === this.policy.activeOutletId) || this.outlets[0];
 
@@ -1113,4 +1161,8 @@ export class RestaurantDatabase {
   }
 }
 
-export const db = new RestaurantDatabase();
+const postgresPersistenceEnabled =
+  process.env.PERSISTENCE_MODE === 'postgres' || process.env.NODE_ENV === 'production';
+export const db = new RestaurantDatabase(DB_FILE, BACKUP_FILE, {
+  memoryOnly: postgresPersistenceEnabled,
+});

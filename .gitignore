@@ -8,3 +8,5 @@ public/assets/aistudio/
 *.log
 .env*
 !.env.example
+/certs/*.crt
+/certs/*.pem
