@@ -19,6 +19,26 @@ export interface StrategicAdviceResult {
 export async function generateStrategicAdvice(userPrompt: string): Promise<StrategicAdviceResult> {
   const apiKey = process.env.GEMINI_API_KEY;
 
+  if (/\b(customer|churn|retention|repeat order|loyalty|come back|return next time)\b/i.test(userPrompt)) {
+    const relevantItem = db.menuItems.find((item) =>
+      userPrompt.toLowerCase().includes(item.name.toLowerCase())
+    );
+    const actualChanges = relevantItem
+      ? db.priceChanges.filter((change) => change.menuItemId === relevantItem.id).length
+      : db.priceChanges.length;
+    return {
+      advice: [
+        'RestaurantIQ cannot estimate whether a particular customer will return: it does not store customer identities, repeat-customer order histories, or complaint records.',
+        relevantItem
+          ? `For ${relevantItem.name}, ${actualChanges} actual applied price change(s) are recorded; these describe pricing exposure, not customer response.`
+          : `${actualChanges} actual applied price change(s) are recorded across the menu; these describe pricing exposure, not customer response.`,
+        'Aggregate order series in the demo dataset are synthetic and cannot support a customer-retention conclusion. A return-rate assessment requires reliable, privacy-conscious repeat-order and complaint data.',
+      ].join('\n\n'),
+      source: 'deterministic_advisor',
+      modelUsed: 'RestaurantIQ Deterministic Advisory Engine',
+    };
+  }
+
   // Gather rich live context from database
   const metrics = db.getDashboardMetrics();
   const lowStock = db.inventory.filter((i) => i.status === 'low_stock' || i.status === 'critical');
@@ -42,6 +62,9 @@ Instructions:
 2. Structure with clear bullet points.
 3. Distinguish between revenue, contribution per dish, and customer price sensitivity.
 4. Highlight any food cost, platform commission, or inventory risks.
+5. Treat all seeded sales, prices, stock, and competitor values as synthetic demonstration data unless provenance proves otherwise.
+6. Never invent customers, repeat-customer behavior, complaints, churn rates, or causal effects of pricing on retention.
+7. You are advisory only. Never claim to approve or apply a price; all prices remain subject to the deterministic server-side policy engine.
 `;
 
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.trim() === '') {
@@ -52,21 +75,30 @@ Instructions:
     };
   }
 
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => abortController.abort(), 20_000);
   try {
-    const ai = new GoogleGenAI();
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [
         {
           role: 'user',
-          parts: [{ text: `${systemContext}\n\nUser Question / Strategic Inquiry: ${userPrompt}` }],
+          parts: [{ text: userPrompt }],
         },
       ],
+      config: {
+        systemInstruction: systemContext,
+        temperature: 0.2,
+        maxOutputTokens: 700,
+        httpOptions: { timeout: 20_000 },
+        abortSignal: abortController.signal,
+      },
     });
 
-    if (response.text) {
+    if (response.text?.trim() && response.text.length <= 8000) {
       return {
-        advice: response.text,
+        advice: response.text.trim(),
         source: 'gemini_2_5_flash',
         modelUsed: 'Google Gemini 2.5 Flash',
       };
@@ -77,13 +109,15 @@ Instructions:
       source: 'deterministic_advisor',
       modelUsed: 'RestaurantIQ Deterministic Advisory Engine',
     };
-  } catch (err: any) {
-    console.warn('Gemini API call failed, falling back to deterministic response:', err?.message);
+  } catch {
+    console.warn('Gemini API call failed; using the deterministic advisory fallback.');
     return {
       advice: generateDeterministicAdviceFallback(userPrompt, metrics, pendingRecs),
       source: 'deterministic_advisor',
       modelUsed: 'RestaurantIQ Deterministic Advisory Engine (API Fallback)',
     };
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
 
@@ -92,25 +126,26 @@ function generateDeterministicAdviceFallback(
   metrics: ReturnType<typeof db.getDashboardMetrics>,
   pendingRecs: ReturnType<typeof db.recommendations.filter>
 ): string {
-  const p = prompt.toLowerCase();
+  const promptText = prompt.toLowerCase();
+  const item = db.menuItems.find((menuItem) => promptText.includes(menuItem.name.toLowerCase()));
+  const pendingSummary = pendingRecs.slice(0, 5).map((rec) =>
+    `${rec.menuItemName}: ${db.policy.currencySymbol}${rec.currentPrice} → ${db.policy.currencySymbol}${rec.suggestedPrice}`
+  );
+  const stockAlerts = db.inventory
+    .filter((entry) => entry.status === 'low_stock' || entry.status === 'critical')
+    .slice(0, 5)
+    .map((entry) => `${entry.name} (${entry.stockQty} ${entry.unit}, ${entry.status})`);
+  const facts = [
+    item ? `Stored menu record: ${item.name} is currently priced at ${db.policy.currencySymbol}${item.currentPrice}; its current economic floor is recalculated during price approval/application.` : null,
+    `Pending recommendations: ${pendingRecs.length}${pendingSummary.length ? ` (${pendingSummary.join('; ')})` : ''}.`,
+    `Recorded inventory alerts: ${stockAlerts.length ? stockAlerts.join('; ') : 'none currently marked low or critical'}.`,
+    `Stored aggregate dashboard contribution margin: ${metrics.contributionMarginPct}% across ${metrics.totalOrders} orders; these seeded/demo values are synthetic and should not be treated as verified live performance.`,
+  ].filter(Boolean);
 
-  if (p.includes('biryani') || p.includes('chicken') || p.includes('poultry')) {
-    return `### 🍗 Poultry & Biryani Margin Diagnostic\n
-* **Current Dynamic:** Chicken Dum Biryani (SKU: BIR-CK-001) is yielding **${db.policy.currencySymbol}150 contribution per unit** at current ${db.policy.currencySymbol}340 price. 
-* **Competitor Pressure:** Spice Route Bistro has adjusted their Dum Pukht Biryani to **${db.policy.currencySymbol}380** (+11.7%), leaving headroom for contribution expansion.
-* **Cost Alert:** Free-range chicken prices surged **+14.5%** over the past 30 days.
-* **Recommendation:** Execute the pending recommendation to raise Hyderabadi Chicken Biryani to **${db.policy.currencySymbol}360** (capturing an extra ${db.policy.currencySymbol}20/order while remaining ${db.policy.currencySymbol}20 under the competitor benchmark). Projected monthly contribution gain: **+${db.policy.currencySymbol}18,800**.`;
-  }
-
-  if (p.includes('weekend') || p.includes('demand') || p.includes('forecast')) {
-    return `### 📈 Weekend Surge & Capacity Optimization\n
-* **Forecasted Volume:** Friday & Saturday dinner slots show an expected **1.42x – 1.55x velocity surge** relative to weekday baselines.
-* **High-Contribution Anchors:** Pair Butter Garlic Naan (${db.policy.currencySymbol}53 contribution / 70.6% margin) with Butter Chicken and Dal Makhani.
-* **Inventory Bottleneck:** Baby goat meat for Mutton Dum Biryani is at **19kg** (below the 25kg safety threshold). Avoid delivery discounts on mutton biryani until restocked on Friday morning.`;
-  }
-
-  return `### 💡 Strategic Margin Recommendation for ${db.policy.restaurantName}\n
-1. **Approve High-Confidence Adjustments:** You have **${pendingRecs.length} pending price recommendations** waiting in the queue. Approving these will raise overall portfolio contribution margin from **${metrics.contributionMarginPct}% to 46.2%**.
-2. **Protect Against Food Cost Inflation:** Chicken wholesale input costs are up 14.5%. The deterministic pricing engine has calculated an updated economic floor of ${db.policy.currencySymbol}190–${db.policy.currencySymbol}205 across gravies to prevent margin erosion.
-3. **Menu Engineering Focus:** Star dishes like *Dal Makhani* (70.8% margin) and *Alphonso Mango Lassi* (58.5% margin) have low price elasticity. Consider combo pairings to increase average check size beyond ${db.policy.currencySymbol}${metrics.averageCheckSize}.`;
+  return [
+    `### ${db.policy.restaurantName} advisory`,
+    ...facts.map((fact) => `- ${fact}`),
+    '- Any price decision must be reviewed through RestaurantIQ’s deterministic economic-floor, movement-limit, and approval controls.',
+    `- Your question was: “${prompt.slice(0, 500)}”`,
+  ].join('\n');
 }

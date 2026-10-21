@@ -22,6 +22,7 @@ interface OverviewDashboardProps {
   onApproveRec: (id: string) => Promise<void> | void;
   onOpenCopilot: (prompt?: string) => void;
   onRefreshData?: () => void;
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>;
 }
 
 type DayPoint = { date: string; sales: number; profit: number; orders: number };
@@ -211,6 +212,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   onApproveRec,
   onOpenCopilot,
   onRefreshData,
+  authFetch,
 }) => {
   const root = useRef<HTMLDivElement>(null);
   const intro = useRef<HTMLElement>(null);
@@ -287,7 +289,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
     if (menuItems.length === 0) return;
     let live = true;
     setForecastFailed(false);
-    fetch('/api/forecasting')
+    authFetch('/api/forecasting')
       .then((r) => {
         if (!r.ok) throw new Error(String(r.status));
         return r.json();
@@ -315,7 +317,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
       })
       .catch(() => { if (live) setForecastFailed(true); });
     return () => { live = false; };
-  }, [menuItems]);
+  }, [menuItems, authFetch]);
 
   const categoryStats = useMemo(() => {
     if (!menuItems || menuItems.length === 0) return [];

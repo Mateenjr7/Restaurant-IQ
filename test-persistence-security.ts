@@ -4,6 +4,9 @@
  */
 
 import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { RestaurantDatabase, db } from './server/db.ts';
 import {
   signToken,
@@ -13,7 +16,7 @@ import {
   initializeAuthSecret,
 } from './server/auth.ts';
 
-export function runPersistenceAndSecurityTests(): { passed: number; total: number } {
+export async function runPersistenceAndSecurityTests(): Promise<{ passed: number; total: number }> {
   console.log('=== RUNNING RESTAURANTIQ PERSISTENCE & SECURITY TESTS ===\n');
   let passed = 0;
   let total = 0;
@@ -266,6 +269,10 @@ export function runPersistenceAndSecurityTests(): { passed: number; total: numbe
   assert(adminPayload !== null, 'Test 9: Successfully verifies genuine signed admin token');
   assert(adminPayload?.role === 'admin', 'Test 9: Admin token payload contains correct role');
   assert(adminPayload?.sub === adminAccount.id, 'Test 9: Admin token contains correct subject');
+  assert(
+    adminPayload?.iss === 'restaurantiq' && adminPayload.aud === 'restaurantiq-api',
+    'Test 9: Authenticated tokens are restricted to the RestaurantIQ API audience'
+  );
 
   // B. Forged / Tampered Token Detection
   const tokenParts = adminToken.split('.');
@@ -275,9 +282,19 @@ export function runPersistenceAndSecurityTests(): { passed: number; total: numbe
   assert(tamperedResult === null, 'Test 10: Rejects tampered token with invalid signature');
 
   // C. Expired Token Handling
-  const expiredToken = signToken(adminAccount, -10); // Expired 10 seconds ago
-  const expiredResult = verifyToken(expiredToken);
+  const shortLivedToken = signToken(adminAccount, 1);
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 2000;
+  const expiredResult = verifyToken(shortLivedToken);
+  Date.now = originalNow;
   assert(expiredResult === null, 'Test 11: Rejects expired token');
+  let invalidLifetimeRejected = false;
+  try {
+    signToken(adminAccount, 86401);
+  } catch {
+    invalidLifetimeRejected = true;
+  }
+  assert(invalidLifetimeRejected, 'Test 11: Refuses to issue tokens with excessive lifetimes');
 
   // D. Role Permission Matrix Integrity
   assert(ROLE_PERMISSIONS.admin.includes('pricing:override'), 'Test 12: Admin role grants price override permission');
@@ -286,6 +303,70 @@ export function runPersistenceAndSecurityTests(): { passed: number; total: numbe
   assert(!ROLE_PERMISSIONS.kitchen_ops.includes('pricing:approve'), 'Test 12: Kitchen Ops cannot approve dynamic prices');
   assert(!ROLE_PERMISSIONS.auditor.includes('pricing:approve'), 'Test 12: Auditor cannot approve dynamic prices');
   assert(!ROLE_PERMISSIONS.auditor.includes('inventory:write'), 'Test 12: Auditor has read-only access and cannot mutate inventory');
+
+  const isolatedDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'restaurantiq-persistence-'));
+  const isolatedDataFile = path.join(isolatedDirectory, 'database.json');
+  const isolatedBackupFile = path.join(isolatedDirectory, 'database-backup.json');
+  try {
+    const isolatedDb = new RestaurantDatabase(isolatedDataFile, isolatedBackupFile);
+    const baselineRoundingStep = isolatedDb.policy.roundingStep;
+    isolatedDb.policy.roundingStep = baselineRoundingStep + 1;
+    isolatedDb.saveToDisk();
+    fs.writeFileSync(isolatedDataFile, '{corrupt primary', 'utf8');
+    const recoveredDb = new RestaurantDatabase(isolatedDataFile, isolatedBackupFile);
+    assert(
+      recoveredDb.policy.roundingStep === baselineRoundingStep,
+      'Test 13: Corrupt primary database recovers from the previous durable backup'
+    );
+    assert(
+      JSON.parse(fs.readFileSync(isolatedDataFile, 'utf8')).policy.roundingStep === baselineRoundingStep,
+      'Test 13: Recovered database is atomically restored as the primary file'
+    );
+
+    const transactionDb = new RestaurantDatabase(
+      path.join(isolatedDirectory, 'transaction.json'),
+      path.join(isolatedDirectory, 'transaction-backup.json')
+    );
+    const transactionBaseline = transactionDb.policy.roundingStep;
+    const originalSave = transactionDb.saveToDisk.bind(transactionDb);
+    transactionDb.saveToDisk = () => {
+      throw new Error('Simulated persistence failure');
+    };
+    let transactionRejected = false;
+    try {
+      await transactionDb.runTransaction(() => {
+        transactionDb.policy.roundingStep = transactionBaseline + 1;
+      });
+    } catch {
+      transactionRejected = true;
+    } finally {
+      transactionDb.saveToDisk = originalSave;
+    }
+    assert(transactionRejected, 'Test 14: Transaction surfaces persistence failures');
+    assert(
+      transactionDb.policy.roundingStep === transactionBaseline,
+      'Test 14: Failed transaction restores the previous in-memory policy'
+    );
+
+    const corruptPrimary = '{corrupt primary retained';
+    const corruptBackup = '{corrupt backup retained';
+    fs.writeFileSync(isolatedDataFile, corruptPrimary, 'utf8');
+    fs.writeFileSync(isolatedBackupFile, corruptBackup, 'utf8');
+    let invalidDatabaseRejected = false;
+    try {
+      new RestaurantDatabase(isolatedDataFile, isolatedBackupFile);
+    } catch {
+      invalidDatabaseRejected = true;
+    }
+    assert(
+      invalidDatabaseRejected &&
+        fs.readFileSync(isolatedDataFile, 'utf8') === corruptPrimary &&
+        fs.readFileSync(isolatedBackupFile, 'utf8') === corruptBackup,
+      'Test 15: Invalid primary and backup files fail closed without overwriting evidence'
+    );
+  } finally {
+    fs.rmSync(isolatedDirectory, { recursive: true, force: true });
+  }
 
   // Clean up test records completely so database stays pristine
   const cleanItemIdx = db.menuItems.findIndex((m) => m.id === testItemId);

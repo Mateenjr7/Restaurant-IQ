@@ -2,7 +2,7 @@
 
 ### Restaurant intelligence, explainable dynamic pricing, and customer-trust safeguards
 
-[![Frontend](https://img.shields.io/badge/Frontend-React%2019%20%7C%20TypeScript-646CFF)](#technology-stack) [![Backend](https://img.shields.io/badge/Backend-Express%20%7C%20Node.js-009688)](#architecture) [![Tests](https://img.shields.io/badge/Tests-118%20passing-2ea44f)](#testing) [![Pricing](https://img.shields.io/badge/Pricing-Deterministic%20%7C%20Policy--bounded-2447D4)](#pricing-safeguards)
+[![Frontend](https://img.shields.io/badge/Frontend-React%2019%20%7C%20TypeScript-646CFF)](#technology-stack) [![Backend](https://img.shields.io/badge/Backend-Express%20%7C%20Node.js-009688)](#architecture) [![Tests](https://img.shields.io/badge/Tests-131%20passing-2ea44f)](#testing) [![Pricing](https://img.shields.io/badge/Pricing-Deterministic%20%7C%20Policy--bounded-2447D4)](#pricing-safeguards)
 
 RestaurantIQ is a full-stack restaurant operations and revenue-management application. It brings menu economics, competitor observations, demand forecasting, pricing recommendations, approvals, and audit history into one workspace—while keeping pricing decisions deterministic and bounded by explicit business policies.
 
@@ -160,57 +160,57 @@ The Express server serves the Vite application in development and serves the bui
 
 ## API Reference
 
-All routes use the same-origin `/api` prefix. Read routes are available without an operator token in the current demo configuration; protected actions require a valid signed token and the role listed below.
+All routes use the same-origin `/api` prefix. Business and audit data require a valid signed token and the role listed below. Seeded demo login and role switching are available only outside production.
 
 ### Authentication and service status
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `POST` | `/api/auth/login` | Public | Authenticate or select a configured demo role; returns a signed session token. |
+| `POST` | `/api/auth/login` | Public (non-production only) | Authenticate a local seeded demo account or select a demo role; production returns `503` until a real user provider is configured. |
 | `GET` | `/api/auth/session` | Optional token | Validate a token and return the current operator identity. |
-| `GET` | `/api/auth/demo-accounts` | Public | List available role profiles for the local demonstration UI. |
+| `GET` | `/api/auth/demo-accounts` | Public (non-production only) | List available role profiles for the local demonstration UI; returns `404` in production. |
 | `GET` | `/api/live` | Public | Liveness check. |
-| `GET` | `/api/ready` | Public | Readiness and storage check. |
-| `GET` | `/api/health` | Public | Health, persistence, and service diagnostics. |
+| `GET` | `/api/ready` | Public | Readiness and storage status without filesystem details. |
+| `GET` | `/api/health` | Admin, revenue manager, auditor | Detailed health, persistence, and service diagnostics. |
 
 ### Pricing, trust, and governance
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/dashboard/metrics` | Public | Dashboard metrics derived from available persisted sales data. |
-| `GET` | `/api/recommendations` | Public | Current and historical recommendation records. |
+| `GET` | `/api/dashboard/metrics` | Admin, revenue manager | Dashboard metrics derived from available persisted sales data. |
+| `GET` | `/api/recommendations` | Admin, revenue manager | Current and historical recommendation records. |
 | `POST` | `/api/recommendations/regenerate` | Admin, revenue manager | Generate a new deterministic recommendation cycle. |
 | `POST` | `/api/recommendations/:id/approve` | Admin, revenue manager | Approve after revalidating current policies. |
 | `POST` | `/api/recommendations/:id/apply` | Admin, revenue manager | Apply an approved price after revalidation and record actual history. |
 | `POST` | `/api/recommendations/:id/reject` | Admin, revenue manager | Reject with an audited rationale. |
 | `POST` | `/api/menu/:id/override-price` | Admin | Apply a manual price that still passes mandatory limits. |
-| `GET` | `/api/customer-trust` | Public | Return real persisted pricing-stability assessments and actual changes. |
-| `GET` | `/api/audit` | Public | Read the audit event history. |
-| `GET` | `/api/policy` | Public | Read the active pricing policy. |
+| `GET` | `/api/customer-trust` | Admin, revenue manager, auditor | Return persisted pricing-stability assessments and actual changes. |
+| `GET` | `/api/audit` | Admin, revenue manager, auditor | Read the audit event history. |
+| `GET` | `/api/policy` | Admin, revenue manager, auditor | Read the active pricing policy. |
 | `PUT` | `/api/policy` | Admin, revenue manager | Validate, persist, and audit pricing policy updates. |
-| `POST` | `/api/pricing/simulate` | Public | Calculate a price scenario; does not apply a price. |
+| `POST` | `/api/pricing/simulate` | Admin, revenue manager | Calculate a price scenario; does not apply a price. |
 
 ### Menu and operations
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/menu` | Public | Read menu catalog and item economics. |
+| `GET` | `/api/menu` | Admin, revenue manager, kitchen ops, auditor | Read menu catalog and item economics. |
 | `POST` | `/api/menu` | Admin, revenue manager | Add a menu item. |
 | `PUT` | `/api/menu/:id` | Admin, revenue manager | Update menu item details and costs. |
-| `GET` | `/api/competitors` | Public | Read competitor records. |
-| `GET` | `/api/competitors/observations` | Public | Read observations and provenance. |
+| `GET` | `/api/competitors` | Admin, revenue manager | Read competitor records. |
+| `GET` | `/api/competitors/observations` | Admin, revenue manager | Read observations and provenance. |
 | `POST` | `/api/competitors/observations` | Admin, revenue manager | Add a manual competitor observation. |
 | `POST` | `/api/competitors/import-menu` | Admin, revenue manager | Import competitor menu rows. |
-| `GET` | `/api/matches` | Public | Read normalized menu matches. |
+| `GET` | `/api/matches` | Admin, revenue manager | Read normalized menu matches. |
 | `PUT` | `/api/matches/:id` | Admin, revenue manager | Update a match review status. |
-| `GET` | `/api/forecasting` | Public | Read demand forecasts; optionally filter by item ID. |
-| `GET` | `/api/inventory` | Public | Read inventory and alert state. |
+| `GET` | `/api/forecasting` | Admin, revenue manager, kitchen ops, auditor | Read demand forecasts; optionally filter by item ID. |
+| `GET` | `/api/inventory` | Admin, revenue manager, kitchen ops, auditor | Read inventory and alert state. |
 | `PUT` | `/api/inventory/:id/adjust` | Admin, kitchen ops | Record an inventory adjustment. |
-| `GET` | `/api/outlets` | Public | Read outlet configuration. |
+| `GET` | `/api/outlets` | Admin, revenue manager | Read outlet configuration. |
 | `POST` | `/api/outlets/switch` | Admin | Change the active outlet. |
-| `GET` | `/api/agents` | Public | Read assistant status. |
+| `GET` | `/api/agents` | Admin, revenue manager, auditor | Read assistant status. |
 | `POST` | `/api/agents/run-cycle` | Admin, revenue manager | Run an operational recommendation cycle. |
-| `POST` | `/api/ai/strategic-advice` | Public | Request optional server-side advisory text. |
+| `POST` | `/api/ai/strategic-advice` | Admin, revenue manager | Request optional server-side advisory text (maximum 2000 characters; rate-limited). |
 
 ## Getting Started
 
@@ -255,13 +255,13 @@ Never use the example secret or example API-key values in a real deployment. Sup
 
 ## Testing
 
-The release-gate suite currently runs **118 assertions** across four suites:
+The release-gate suite currently runs **131 assertions** across four suites:
 
 | Suite | Assertions | Coverage |
 |---|---:|---|
 | Pricing engine | 55 | Economic floor, rounding, ceiling conflicts, movement boundaries, fees, discounts, and invalid inputs. |
-| Forecasting | 15 | Forecast horizon, held-out metrics, prediction intervals, and insufficient-history behavior. |
-| Persistence and security | 29 | Persistence, restart behavior, approvals, application checks, overrides, token validation, and role permissions. |
+| Forecasting | 21 | Forecast horizon, held-out metrics, chronological validation, synthetic-data labels, and missing/invalid-history behavior. |
+| Persistence and security | 36 | Persistence recovery, restart behavior, transaction rollback, approvals, overrides, token validation, and role permissions. |
 | Customer trust | 19 | Directional caps, rolling accumulation, windows, minimum spacing, protected prices, staleness, duplicate applications, audit, and persistence. |
 
 ```bash
@@ -276,6 +276,7 @@ npm run build   # Production frontend build
 - Existing older supported data schemas are migrated with defaults for newly introduced policy settings.
 - Newly recorded changes form the verified price-history basis. A legacy item's `lastUpdated` timestamp is not assumed to prove a price change.
 - Seeded sales and competitor examples are demonstration data and must not be presented as verified live data.
+- Forecast outputs disclose when they use synthetic demo records; an item with no usable order baseline produces no forecast values.
 - There is no persisted customer identity, customer-level repeat-visit series, or complaint dataset. Customer retention conclusions are therefore unavailable.
 - The configured POS integration is demonstration/emulated unless separately connected to a real provider. Do not assume that a local application has changed an external POS.
 - Competitor information depends on the observations and imports supplied to the application; no live third-party feed is guaranteed.
@@ -311,7 +312,10 @@ npm run build   # Production frontend build
 ## Production Notes
 
 - Build the frontend with `npm run build`; the output is written to `dist/`.
-- Set `NODE_ENV=production`, a secure `AUTH_SECRET`, and the intended `PORT` in the deployment environment before starting the Express server.
+- Set `NODE_ENV=production`, a secure `AUTH_SECRET`, the intended `PORT`, `APP_URL`, and exact `ALLOWED_ORIGINS` in the deployment environment.
+- Production login deliberately rejects seeded demo accounts and role switching. This repository does not yet include a production user directory or external identity-provider integration; do not expose it as an authenticated production service until that is configured.
+- Detailed business and audit APIs require an authenticated, authorized role. Liveness and readiness endpoints return only operational status.
+- JSON persistence keeps a rolling previous-state backup. If neither the primary file nor backup can be parsed, startup fails rather than replacing potentially recoverable data with seed values.
 - Configure TLS termination, allowed origins, durable storage/backup, monitoring, and a real POS integration as appropriate for the target deployment.
 - The repository contains a local development setup; a public production deployment is not implied by the presence of a GitHub repository.
 - Review the application-specific data disclosure and demo-mode behavior before connecting live business data.

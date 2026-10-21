@@ -23,12 +23,14 @@ import { DemandForecastItem } from '../../server/types.ts';
 interface DemandForecastingProps {
   menuItems: any[];
   currencySymbol?: string;
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onOpenCopilot: (prompt?: string) => void;
 }
 
 export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
   menuItems,
   currencySymbol = '₹',
+  authFetch,
   onOpenCopilot,
 }) => {
   const [selectedItemId, setSelectedItemId] = useState(menuItems[0]?.id || '');
@@ -44,7 +46,7 @@ export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
     setLoading(true);
     setError(null);
 
-    fetch(`/api/forecasting?itemId=${selectedItemId}`)
+    authFetch(`/api/forecasting?itemId=${encodeURIComponent(selectedItemId)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to fetch demand forecast`);
         return res.json();
@@ -65,9 +67,11 @@ export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [selectedItemId]);
+  }, [selectedItemId, authFetch]);
 
-  const dailyBaseline = forecast?.historicalDailyAverage || Math.round((activeItem?.historicalSalesLast30Days || 300) / 30);
+  const dailyBaseline = forecast
+    ? forecast.historicalDailyAverage
+    : Math.round((activeItem?.historicalSalesLast30Days || 0) / 30);
 
   const timeSlots = [
     { slot: '12:00 - 15:00 (Lunch Rush)', share: 35, orders: Math.round(dailyBaseline * 0.35) },
@@ -113,6 +117,11 @@ export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
           <div>
             <div className="font-semibold text-[#1B1F2A] flex items-center gap-2">
               <span>Model: {forecast?.modelType || 'Holt-Winters Additive Seasonality'}</span>
+              {forecast?.isSyntheticDemoData && (
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#FFF4E5] text-[#8A5700] border border-[#E6C995]">
+                  Synthetic demo data
+                </span>
+              )}
               <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#2447D4]/10 text-[#2447D4] font-mono-tech">
                 Modelled Estimate
               </span>
@@ -189,6 +198,10 @@ export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{error}</span>
               </div>
+            ) : forecast?.hasForecastData === false ? (
+              <div className="py-12 text-center text-xs text-[#5F667A]">
+                No forecast is available because this item has no valid historical order series or recorded order baseline.
+              </div>
             ) : (
               <div className="grid grid-cols-7 gap-2">
                 {(forecast?.next7DaysForecast || []).map((d, idx) => {
@@ -239,8 +252,11 @@ export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
           <div className="p-6 enterprise-panel space-y-4 border border-[#DDD7CA]">
             <h3 className="text-sm font-semibold text-[#1B1F2A] flex items-center gap-2">
               <Clock className="w-4 h-4 text-[#2447D4]" />
-              <span>Time-of-Day Demand Distribution</span>
+              <span>Illustrative Time-of-Day Allocation</span>
             </h3>
+            <p className="text-[10px] text-[#5F667A]">
+              Assumed planning shares, not measured hourly sales. {forecast?.isSyntheticDemoData ? 'Displayed volume uses synthetic demo data.' : ''}
+            </p>
             <div className="space-y-3">
               {timeSlots.map((ts, idx) => (
                 <div key={idx} className="p-3.5 enterprise-raised rounded-xl space-y-1.5 border border-[#CBC4B3]">
@@ -255,7 +271,7 @@ export const DemandForecastingView: React.FC<DemandForecastingProps> = ({
                     />
                   </div>
                   <div className="text-[11px] text-[#5F667A] flex justify-between font-mono-tech pt-0.5">
-                    <span>Est. volume: ~{ts.orders} orders</span>
+                    <span>{forecast?.hasForecastData ? `Est. volume: ~${ts.orders} orders` : 'Volume estimate unavailable'}</span>
                     <span className={ts.share > 40 ? 'text-[#14806A]' : 'text-[#5F667A]'}>
                       {ts.share > 40 ? 'Peak Dinner Yield' : 'Off-peak slot'}
                     </span>

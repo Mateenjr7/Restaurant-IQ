@@ -42,12 +42,14 @@ const configuredAllowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
   : [];
 
-const defaultAllowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-];
+const defaultAllowedOrigins = process.env.NODE_ENV === 'production'
+  ? []
+  : [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+    ];
 
 if (process.env.APP_URL) {
   defaultAllowedOrigins.push(process.env.APP_URL);
@@ -57,7 +59,8 @@ const ALLOWED_ORIGIN_SET = new Set([...defaultAllowedOrigins, ...configuredAllow
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
-  if (origin && (ALLOWED_ORIGIN_SET.has(origin) || origin.endsWith('.run.app') || process.env.NODE_ENV !== 'production')) {
+  if (origin && ALLOWED_ORIGIN_SET.has(origin)) {
+    res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
 
@@ -66,8 +69,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     'Access-Control-Allow-Headers',
     'Content-Type, Authorization, X-Requested-With, Accept, Origin'
   );
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-
   // Hardened Security Headers
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -75,9 +76,12 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const developmentWebSocketSources = process.env.NODE_ENV === 'production'
     ? ''
     : ' ws://localhost:24678 ws://127.0.0.1:24678';
+  const developmentScriptSources = process.env.NODE_ENV === 'production'
+    ? ''
+    : " 'unsafe-inline' 'unsafe-eval'";
   res.setHeader(
     'Content-Security-Policy',
-    `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https:${developmentWebSocketSources};`
+    `default-src 'self'; script-src 'self'${developmentScriptSources}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self'${developmentWebSocketSources};`
   );
 
   if (req.method === 'OPTIONS') {
@@ -97,7 +101,13 @@ app.use(authenticateToken);
 app.post('/api/auth/login', rateLimit(60000, 20), (req: Request, res: Response) => {
   const { username, password, role } = req.body || {};
 
-  // Support demo role-based login in dev/eval mode
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(503).json({
+      error: 'Production authentication is not configured. Seeded demonstration accounts cannot be used in production.',
+    });
+  }
+
+  // Role switching and seeded accounts are only for local demonstration.
   if (role && !username) {
     const demoAccount = DEMO_ACCOUNTS.find((a) => a.role === role);
     if (!demoAccount) {
@@ -131,8 +141,9 @@ app.post('/api/auth/login', rateLimit(60000, 20), (req: Request, res: Response) 
     return res.status(401).json({ error: 'Invalid username or password' });
   }
 
-  const inputHash = crypto.createHash('sha256').update(String(password)).digest('hex');
-  if (inputHash !== account.passwordHash) {
+  const inputHash = crypto.createHash('sha256').update(String(password)).digest();
+  const expectedHash = Buffer.from(account.passwordHash, 'hex');
+  if (inputHash.length !== expectedHash.length || !crypto.timingSafeEqual(inputHash, expectedHash)) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
 
@@ -168,6 +179,9 @@ app.get('/api/auth/session', (req: Request, res: Response) => {
 
 // Public demo operator profiles for the interactive evaluation role-switcher
 app.get('/api/auth/demo-accounts', (req: Request, res: Response) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ error: 'Not found' });
+  }
   res.json(
     DEMO_ACCOUNTS.map((a) => ({
       id: a.id,
@@ -207,7 +221,7 @@ app.get('/api/ready', (req: Request, res: Response) => {
 });
 
 // Diagnostic Health check
-app.get('/api/health', (req: Request, res: Response) => {
+app.get('/api/health', requireRole(['admin', 'revenue_manager', 'auditor']), (req: Request, res: Response) => {
   const storageHealth = db.getStorageHealth();
   const apiKeyConfigured = Boolean(
     process.env.GEMINI_API_KEY &&
@@ -253,7 +267,7 @@ app.get('/api/health', (req: Request, res: Response) => {
 // 3. POLICY & GOVERNANCE ENDPOINTS
 // ==========================================
 
-app.get('/api/policy', (req: Request, res: Response) => {
+app.get('/api/policy', requireRole(['admin', 'revenue_manager', 'auditor']), (req: Request, res: Response) => {
   res.json(db.policy);
 });
 
@@ -386,7 +400,7 @@ app.put('/api/policy', requireRole(['admin', 'revenue_manager']), rateLimit(6000
 });
 
 // Outlets Endpoints
-app.get('/api/outlets', (req: Request, res: Response) => {
+app.get('/api/outlets', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   res.json(db.outlets);
 });
 
@@ -402,7 +416,7 @@ app.post('/api/outlets/switch', requireRole(['admin']), (req: Request, res: Resp
 });
 
 // Menu Item Matching Endpoints
-app.get('/api/matches', (req: Request, res: Response) => {
+app.get('/api/matches', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   res.json(db.menuMatches);
 });
 
@@ -441,7 +455,7 @@ app.post('/api/competitors/import-menu', requireRole(['admin', 'revenue_manager'
 // 4. DASHBOARD & ANALYTICS
 // ==========================================
 
-app.get('/api/dashboard/metrics', (req: Request, res: Response) => {
+app.get('/api/dashboard/metrics', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   res.json(db.getDashboardMetrics());
 });
 
@@ -449,7 +463,7 @@ app.get('/api/dashboard/metrics', (req: Request, res: Response) => {
 // 5. MENU INTELLIGENCE CRUD
 // ==========================================
 
-app.get('/api/menu', (req: Request, res: Response) => {
+app.get('/api/menu', requireRole(['admin', 'revenue_manager', 'kitchen_ops', 'auditor']), (req: Request, res: Response) => {
   const category = req.query.category as string;
   const search = (req.query.search as string || '').toLowerCase();
 
@@ -530,7 +544,8 @@ app.post('/api/menu', requireRole(['admin', 'revenue_manager']), (req: Request, 
     demandTrend: 'steady' as const,
     portionGrams: Number(portionGrams) || 400,
     lastUpdated: new Date().toISOString(),
-    historicalSalesLast30Days: 120,
+    historicalSalesLast30Days: 0,
+    isSyntheticDemoData: false,
   };
 
   db.menuItems.unshift(newItem);
@@ -544,45 +559,58 @@ app.put('/api/menu/:id', requireRole(['admin', 'revenue_manager']), (req: Reques
   const item = db.menuItems.find((m) => m.id === id);
   if (!item) return res.status(404).json({ error: 'Menu item not found' });
 
-  const { name, currentPrice, ingredientCost, packagingCost, minContribution, status, description } = req.body;
-
-  if (name) item.name = String(name).trim().slice(0, 100);
-  if (description !== undefined) item.description = String(description).trim().slice(0, 300);
-
-  if (ingredientCost !== undefined) {
-    const cost = Number(ingredientCost);
-    if (isNaN(cost) || !isFinite(cost) || cost <= 0) return res.status(400).json({ error: 'ingredientCost must be greater than 0' });
-    item.ingredientCost = cost;
+  const updates = req.body;
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+    return res.status(400).json({ error: 'Request body must be a valid JSON object' });
   }
-  if (packagingCost !== undefined) {
-    const pkg = Number(packagingCost);
-    if (isNaN(pkg) || !isFinite(pkg) || pkg < 0) return res.status(400).json({ error: 'packagingCost cannot be negative' });
-    item.packagingCost = pkg;
+  const { name, currentPrice, ingredientCost, packagingCost, minContribution, status, description } = updates;
+  if (currentPrice !== undefined && Number(currentPrice) !== item.currentPrice) {
+    return res.status(400).json({ error: 'Price changes must use the guarded override or recommendation workflow.' });
   }
-  item.totalVariableCost = item.ingredientCost + item.packagingCost;
-
-  if (minContribution !== undefined) {
-    const mc = Number(minContribution);
-    if (isNaN(mc) || !isFinite(mc) || mc < 0) return res.status(400).json({ error: 'minContribution cannot be negative' });
-    item.minContribution = mc;
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+    return res.status(400).json({ error: 'name must be a non-empty string' });
   }
-  if (status && ['active', 'inactive'].includes(status)) item.status = status;
-
-  if (currentPrice !== undefined) {
-    const p = Number(currentPrice);
-    if (isNaN(p) || !isFinite(p) || p <= 0) return res.status(400).json({ error: 'currentPrice must be greater than 0' });
-
-    const activeOutlet = db.outlets.find((o) => o.id === db.policy.activeOutletId) || db.outlets[0];
-    const feeRate = ((activeOutlet?.deliveryCommissionPct || 0) + 2) / 100;
-    const economicFloor = Math.ceil((item.totalVariableCost + item.minContribution) / (1 - feeRate));
-
-    if (p < economicFloor) {
-      return res.status(400).json({
-        error: `Price ₹${p} violates economic floor of ₹${economicFloor} (cost: ₹${item.totalVariableCost} + contribution: ₹${item.minContribution} with ${Math.round(feeRate * 100)}% fees)`,
-      });
-    }
-    item.currentPrice = p;
+  if (description !== undefined && typeof description !== 'string') {
+    return res.status(400).json({ error: 'description must be a string' });
   }
+  if (status !== undefined && !['active', 'inactive'].includes(status)) {
+    return res.status(400).json({ error: 'status must be active or inactive' });
+  }
+
+  const nextIngredientCost = ingredientCost === undefined ? item.ingredientCost : Number(ingredientCost);
+  const nextPackagingCost = packagingCost === undefined ? item.packagingCost : Number(packagingCost);
+  const nextMinContribution = minContribution === undefined ? item.minContribution : Number(minContribution);
+  if (!Number.isFinite(nextIngredientCost) || nextIngredientCost <= 0) {
+    return res.status(400).json({ error: 'ingredientCost must be greater than 0' });
+  }
+  if (!Number.isFinite(nextPackagingCost) || nextPackagingCost < 0) {
+    return res.status(400).json({ error: 'packagingCost must be a non-negative number' });
+  }
+  if (!Number.isFinite(nextMinContribution) || nextMinContribution < 0) {
+    return res.status(400).json({ error: 'minContribution must be a non-negative number' });
+  }
+
+  const totalVariableCost = nextIngredientCost + nextPackagingCost;
+  const activeOutlet = db.outlets.find((o) => o.id === db.policy.activeOutletId) || db.outlets[0];
+  const feeRate = ((activeOutlet?.deliveryCommissionPct || 0) + 2) / 100;
+  const economicFloor = Math.max(
+    item.minPolicyPrice,
+    Math.ceil((totalVariableCost + nextMinContribution) / (1 - feeRate))
+  );
+  if (item.currentPrice < economicFloor) {
+    return res.status(400).json({
+      error: `Updated costs require an economic floor of ₹${economicFloor}; current applied price is ₹${item.currentPrice}. Apply a separately guarded price change first.`,
+    });
+  }
+
+  if (name !== undefined) item.name = name.trim().slice(0, 100);
+  if (description !== undefined) item.description = description.trim().slice(0, 300);
+  item.ingredientCost = nextIngredientCost;
+  item.packagingCost = nextPackagingCost;
+  item.totalVariableCost = totalVariableCost;
+  item.minContribution = nextMinContribution;
+  item.minPolicyPrice = economicFloor;
+  if (status !== undefined) item.status = status;
 
   item.lastUpdated = new Date().toISOString();
   db.saveToDisk();
@@ -614,11 +642,11 @@ app.post('/api/menu/:id/override-price', requireRole(['admin']), rateLimit(60000
 // 6. COMPETITORS & OBSERVATIONS
 // ==========================================
 
-app.get('/api/competitors', (req: Request, res: Response) => {
+app.get('/api/competitors', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   res.json(db.competitors);
 });
 
-app.get('/api/competitors/observations', (req: Request, res: Response) => {
+app.get('/api/competitors/observations', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   res.json(db.observations);
 });
 
@@ -664,11 +692,11 @@ app.post('/api/competitors/observations', requireRole(['admin', 'revenue_manager
 // 7. PRICING RECOMMENDATIONS & APPROVALS
 // ==========================================
 
-app.get('/api/recommendations', (req: Request, res: Response) => {
+app.get('/api/recommendations', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   res.json(db.recommendations);
 });
 
-app.get('/api/customer-trust', (req: Request, res: Response) => {
+app.get('/api/customer-trust', requireRole(['admin', 'revenue_manager', 'auditor']), (req: Request, res: Response) => {
   res.json(db.getCustomerTrustDashboard());
 });
 
@@ -711,7 +739,7 @@ app.post('/api/recommendations/regenerate', requireRole(['admin', 'revenue_manag
 // 8. PRICING SIMULATOR (Single Financial Model)
 // ==========================================
 
-app.post('/api/pricing/simulate', (req: Request, res: Response) => {
+app.post('/api/pricing/simulate', requireRole(['admin', 'revenue_manager']), (req: Request, res: Response) => {
   const {
     currentPrice,
     proposedPrice,
@@ -784,9 +812,12 @@ app.post('/api/pricing/simulate', (req: Request, res: Response) => {
 // 9. DEMAND FORECASTING
 // ==========================================
 
-app.get('/api/forecasting', (req: Request, res: Response) => {
+app.get('/api/forecasting', requireRole(['admin', 'revenue_manager', 'kitchen_ops', 'auditor']), (req: Request, res: Response) => {
   const itemId = req.query.itemId as string;
   if (itemId) {
+    if (!db.menuItems.some((item) => item.id === itemId)) {
+      return res.status(404).json({ error: 'Menu item not found' });
+    }
     res.json(generateDemandForecast(itemId));
   } else {
     res.json(getAllDemandForecasts());
@@ -797,7 +828,7 @@ app.get('/api/forecasting', (req: Request, res: Response) => {
 // 10. INVENTORY MANAGEMENT
 // ==========================================
 
-app.get('/api/inventory', (req: Request, res: Response) => {
+app.get('/api/inventory', requireRole(['admin', 'revenue_manager', 'kitchen_ops', 'auditor']), (req: Request, res: Response) => {
   res.json(db.inventory);
 });
 
@@ -821,7 +852,7 @@ app.put('/api/inventory/:id/adjust', requireRole(['admin', 'kitchen_ops']), (req
 // 11. AI AGENTS PIPELINE OBSERVABILITY
 // ==========================================
 
-app.get('/api/agents', (req: Request, res: Response) => {
+app.get('/api/agents', requireRole(['admin', 'revenue_manager', 'auditor']), (req: Request, res: Response) => {
   res.json(db.agents);
 });
 
@@ -849,7 +880,7 @@ app.post('/api/agents/run-cycle', requireRole(['admin', 'revenue_manager']), (re
 // 12. AUDIT TRAIL
 // ==========================================
 
-app.get('/api/audit', (req: Request, res: Response) => {
+app.get('/api/audit', requireRole(['admin', 'revenue_manager', 'auditor']), (req: Request, res: Response) => {
   res.json(db.auditEvents);
 });
 
@@ -857,10 +888,10 @@ app.get('/api/audit', (req: Request, res: Response) => {
 // 13. STRATEGIC AI COPILOT ADVICE
 // ==========================================
 
-app.post('/api/ai/strategic-advice', async (req: Request, res: Response) => {
-  const { prompt } = req.body;
-  if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
-    return res.status(400).json({ error: 'Prompt is required' });
+app.post('/api/ai/strategic-advice', requireRole(['admin', 'revenue_manager']), rateLimit(60000, 10), async (req: Request, res: Response) => {
+  const prompt = req.body?.prompt;
+  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 2000) {
+    return res.status(400).json({ error: 'Prompt must be a non-empty string of at most 2000 characters' });
   }
 
   try {
@@ -872,7 +903,8 @@ app.post('/api/ai/strategic-advice', async (req: Request, res: Response) => {
       generatedAt: new Date().toISOString(),
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Strategic advisory engine error' });
+    console.error('Strategic advisory request failed.');
+    res.status(500).json({ error: 'Strategic advisory engine error' });
   }
 });
 

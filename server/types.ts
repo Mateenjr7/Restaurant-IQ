@@ -39,6 +39,7 @@ export interface MenuItem {
   portionGrams: number;
   lastUpdated: string;
   historicalSalesLast30Days: number;
+  isSyntheticDemoData?: boolean;
   dailySalesHistory?: Array<{
     date: string;
     dayOfWeek: string;
@@ -172,6 +173,8 @@ export interface DemandForecastItem {
   itemName: string;
   historicalDailyAverage: number;
   next7DaysForecast: DemandForecastPoint[];
+  hasForecastData: boolean;
+  isSyntheticDemoData: boolean;
   mae: number | null;
   rmse: number | null;
   validationStatus: string;

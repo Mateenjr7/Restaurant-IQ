@@ -26,8 +26,31 @@ import { db } from './db.ts';
  * - Forecasts are explicitly labeled as estimates with documented assumptions.
  */
 export function generateDemandForecast(menuItemId: string): DemandForecastItem {
-  const item = db.menuItems.find((m) => m.id === menuItemId) || db.menuItems[0];
-  const history = item.dailySalesHistory || [];
+  const item = db.menuItems.find((m) => m.id === menuItemId);
+  if (!item) throw new Error('Menu item not found');
+  const sourceHistory = item.dailySalesHistory || [];
+  const history = [...sourceHistory].sort((a, b) => a.date.localeCompare(b.date));
+  const validDates = new Set<string>();
+  const historyIsValid = history.every((day, index) => {
+    const parsedDate = new Date(`${day.date}T00:00:00Z`);
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(day.date) &&
+      !Number.isNaN(parsedDate.getTime()) &&
+      parsedDate.toISOString().slice(0, 10) === day.date;
+    if (
+      !validDate ||
+      validDates.has(day.date) ||
+      !Number.isFinite(day.orders) ||
+      day.orders < 0 ||
+      !Number.isFinite(day.revenue) ||
+      day.revenue < 0
+    ) return false;
+    validDates.add(day.date);
+    if (index > 0) {
+      const previousDate = new Date(`${history[index - 1].date}T00:00:00Z`);
+      if (parsedDate.getTime() - previousDate.getTime() !== 86400000) return false;
+    }
+    return true;
+  });
 
   // Day names helper
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -35,13 +58,17 @@ export function generateDemandForecast(menuItemId: string): DemandForecastItem {
 
   // If historical time-series data is insufficient (< 14 observations),
   // NEVER fabricate validation metrics!
-  if (!history || history.length < 14) {
-    const baselineDaily = Math.round((item.historicalSalesLast30Days || 300) / 30);
+  if (!historyIsValid || history.length < 14) {
+    const recordedAggregateOrders = Number.isFinite(item.historicalSalesLast30Days)
+      ? Math.max(0, item.historicalSalesLast30Days)
+      : 0;
+    const hasForecastData = recordedAggregateOrders > 0;
+    const baselineDaily = hasForecastData ? Math.round(recordedAggregateOrders / 30) : 0;
     const dayOfWeekFactors = [1.35, 0.78, 0.84, 0.92, 1.05, 1.42, 1.55]; // Sun..Sat
     const trendFactor = item.demandTrend === 'surging' ? 1.08 : item.demandTrend === 'softening' ? 0.94 : 1.0;
 
     const next7DaysForecast: DemandForecastPoint[] = [];
-    for (let i = 1; i <= 7; i++) {
+    for (let i = 1; hasForecastData && i <= 7; i++) {
       const forecastDate = new Date(today);
       forecastDate.setDate(today.getDate() + i);
       const dayIndex = forecastDate.getDay();
@@ -62,19 +89,31 @@ export function generateDemandForecast(menuItemId: string): DemandForecastItem {
       itemName: item.name,
       historicalDailyAverage: baselineDaily,
       next7DaysForecast,
+      hasForecastData,
+      isSyntheticDemoData: Boolean(item.isSyntheticDemoData),
       mae: null,
       rmse: null,
-      validationStatus: 'Validation metrics unavailable (insufficient out-of-sample historical observations)',
+      validationStatus: !hasForecastData
+        ? 'Forecast unavailable (no valid daily series or positive order baseline is recorded)'
+        : historyIsValid
+          ? 'Validation metrics unavailable (insufficient out-of-sample historical observations)'
+          : 'Validation metrics unavailable (daily history contains invalid, duplicate, or missing dates)',
       isEstimate: true,
       modelType: 'Heuristic Day-of-Week Seasonality Baseline (Estimate)',
       trend: item.demandTrend,
-      evaluationWindow: 'None (Requires at least 14 daily historical order observations)',
+      evaluationWindow: 'None (Requires at least 14 consecutive, valid daily historical order observations)',
       assumptions: [
-        'Heuristic baseline: Day-of-week multipliers applied to 30-day daily average',
-        'Validation metrics omitted because historical daily data is insufficient for out-of-sample testing',
+        hasForecastData
+          ? 'Heuristic baseline: Day-of-week multipliers applied to the recorded 30-day order aggregate'
+          : 'No forecast values are generated without a valid daily series or recorded order baseline',
+        historyIsValid
+          ? 'Validation metrics omitted because historical daily data is insufficient for out-of-sample testing'
+          : 'Daily history is invalid or has gaps; observations were not interpolated or treated as zero-order days',
         'Subject to restaurant operating capacity and seasonal holidays',
       ],
-      methodDescription: 'Heuristic seasonal multiplier baseline. Validation metrics unavailable until sufficient daily sales history is recorded.',
+      methodDescription: hasForecastData
+        ? 'Heuristic seasonal multiplier baseline. Validation metrics are unavailable until sufficient consecutive, valid daily sales history is recorded.'
+        : 'No forecast is returned because the item has no usable historical order baseline.',
     };
   }
 
@@ -189,9 +228,11 @@ export function generateDemandForecast(menuItemId: string): DemandForecastItem {
     itemName: item.name,
     historicalDailyAverage: baselineDaily,
     next7DaysForecast,
+    hasForecastData: true,
+    isSyntheticDemoData: Boolean(item.isSyntheticDemoData),
     mae: Math.round(realMAE * 10) / 10,
     rmse: Math.round(realRMSE * 10) / 10,
-    validationStatus: `Evaluated on ${valSeries.length}-day held-out out-of-sample historical validation split`,
+    validationStatus: `Evaluated on ${valSeries.length}-day held-out out-of-sample historical validation split${item.isSyntheticDemoData ? '; input is synthetic demonstration data' : ''}`,
     isEstimate: true,
     modelType: 'Holt-Winters Additive Exponential Smoothing (L=7 Seasonality)',
     trend: item.demandTrend,

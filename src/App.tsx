@@ -4,7 +4,7 @@
  */
 
 import { PanelSpotlight } from './components/PanelSpotlight.tsx';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { BrandLogo } from './components/BrandLogo.tsx';
@@ -200,7 +200,7 @@ export default function App() {
   }, [activeView, route.experience, loading]);
 
   // Authenticated fetch wrapper that attaches genuine Bearer session token
-  const authFetch = async (url: string, options: RequestInit = {}) => {
+  const authFetch = useCallback(async (url: string, options: RequestInit = {}) => {
     const headers = new Headers(options.headers || {});
     const token = authToken || localStorage.getItem('restaurantiq_token');
     if (token) {
@@ -213,7 +213,7 @@ export default function App() {
       setGlobalBannerError(msg);
     }
     return res;
-  };
+  }, [authToken]);
 
   // Switch operator profile by obtaining a genuine server-signed JWT session
   const switchOperatorRole = async (role: string) => {
@@ -227,12 +227,15 @@ export default function App() {
       if (res.ok && data.token) {
         setAuthToken(data.token);
         setCurrentUser(data.user);
+        setActiveView('overview');
         localStorage.setItem('restaurantiq_token', data.token);
         setUserDropdownOpen(false);
         setGlobalBannerError(null);
+      } else {
+        setGlobalBannerError(data.error || `Authentication failed (${res.status})`);
       }
     } catch (err) {
-      console.error('Failed to switch operator role:', err);
+      setGlobalBannerError(err instanceof Error ? err.message : 'Failed to authenticate with RestaurantIQ');
     }
   };
 
@@ -258,11 +261,12 @@ export default function App() {
             return;
           }
         }
+        localStorage.removeItem('restaurantiq_token');
 
         // Default initial session: Revenue Manager
         await switchOperatorRole('revenue_manager');
       } catch (err) {
-        console.error('Auth initialization error:', err);
+        setGlobalBannerError(err instanceof Error ? err.message : 'RestaurantIQ authentication could not be initialized');
       }
     };
 
@@ -272,56 +276,71 @@ export default function App() {
   // Load all live data from backend APIs
   const fetchAllData = async () => {
     try {
-      const [
-        menuRes,
-        recRes,
-        compRes,
-        obsRes,
-        matchRes,
-        outletsRes,
-        invRes,
-        agentRes,
-        auditRes,
-        metricsRes,
-        policyRes,
-        trustRes,
-      ] = await Promise.all([
-        fetch('/api/menu').then((r) => r.json()),
-        fetch('/api/recommendations').then((r) => r.json()),
-        fetch('/api/competitors').then((r) => r.json()),
-        fetch('/api/competitors/observations').then((r) => r.json()),
-        fetch('/api/matches').then((r) => r.json()),
-        fetch('/api/outlets').then((r) => r.json()),
-        fetch('/api/inventory').then((r) => r.json()),
-        fetch('/api/agents').then((r) => r.json()),
-        fetch('/api/audit').then((r) => r.json()),
-        fetch('/api/dashboard/metrics').then((r) => r.json()),
-        fetch('/api/policy').then((r) => r.json()),
-        fetch('/api/customer-trust').then((r) => r.json()),
-      ]);
+      if (!currentUser) return;
+      const isRevenueRole = ['admin', 'revenue_manager'].includes(currentUser.role);
+      const isAuditRole = currentUser.role === 'auditor';
+      const requests: Array<[string, string]> = [
+        ['menu', '/api/menu'],
+        ['inventory', '/api/inventory'],
+      ];
+      if (isRevenueRole) {
+        requests.push(
+          ['recommendations', '/api/recommendations'],
+          ['competitors', '/api/competitors'],
+          ['observations', '/api/competitors/observations'],
+          ['matches', '/api/matches'],
+          ['outlets', '/api/outlets'],
+          ['metrics', '/api/dashboard/metrics'],
+          ['forecasting', '/api/forecasting']
+        );
+      } else if (currentUser.role === 'kitchen_ops' || isAuditRole) {
+        requests.push(['forecasting', '/api/forecasting']);
+      }
+      if (isRevenueRole || isAuditRole) {
+        requests.push(
+          ['agents', '/api/agents'],
+          ['audit', '/api/audit'],
+          ['policy', '/api/policy'],
+          ['customerTrust', '/api/customer-trust']
+        );
+      }
 
-      setMenuItems(menuRes || []);
-      setRecommendations(recRes || []);
-      setCompetitors(compRes || []);
-      setObservations(obsRes || []);
-      setMenuMatches(matchRes || []);
-      setOutlets(outletsRes || []);
-      setInventory(invRes || []);
-      setAgents(agentRes || []);
-      setAuditEvents(auditRes || []);
-      setMetrics(metricsRes || null);
-      setPolicy(policyRes || null);
-      setCustomerTrust(trustRes || null);
+      const results = await Promise.all(requests.map(async ([key, url]) => {
+        const response = await authFetch(url);
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || `Failed to load ${key} (${response.status})`);
+        }
+        return [key, await response.json()] as const;
+      }));
+
+      for (const [key, data] of results) {
+        switch (key) {
+          case 'menu': setMenuItems(data || []); break;
+          case 'recommendations': setRecommendations(data || []); break;
+          case 'competitors': setCompetitors(data || []); break;
+          case 'observations': setObservations(data || []); break;
+          case 'matches': setMenuMatches(data || []); break;
+          case 'outlets': setOutlets(data || []); break;
+          case 'inventory': setInventory(data || []); break;
+          case 'agents': setAgents(data || []); break;
+          case 'audit': setAuditEvents(data || []); break;
+          case 'metrics': setMetrics(data || null); break;
+          case 'policy': setPolicy(data || null); break;
+          case 'customerTrust': setCustomerTrust(data || null); break;
+        }
+      }
     } catch (err) {
       console.error('Error fetching live data from RestaurantIQ API:', err);
+      setGlobalBannerError(err instanceof Error ? err.message : 'Failed to load RestaurantIQ data');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchAllData();
-  }, []);
+    if (authToken && currentUser) void fetchAllData();
+  }, [authToken, currentUser]);
 
   useEffect(() => {
     document.title =
@@ -526,6 +545,10 @@ export default function App() {
   };
 
   const handleOpenCopilot = (prompt?: string) => {
+    if (!currentUser || !['admin', 'revenue_manager'].includes(currentUser.role)) {
+      setGlobalBannerError('Strategic AI advice is available to administrators and revenue managers.');
+      return;
+    }
     setCopilotInitialPrompt(prompt || '');
     setCopilotOpen(true);
   };
@@ -617,6 +640,26 @@ export default function App() {
       ],
     },
   ];
+  const revenueRoles = ['admin', 'revenue_manager'];
+  const viewRoles: Record<string, string[]> = {
+    overview: ['admin', 'revenue_manager', 'kitchen_ops', 'auditor'],
+    competitors: revenueRoles,
+    menu: ['admin', 'revenue_manager', 'kitchen_ops', 'auditor'],
+    forecasting: ['admin', 'revenue_manager', 'kitchen_ops', 'auditor'],
+    recommendations: revenueRoles,
+    simulator: revenueRoles,
+    inventory: ['admin', 'revenue_manager', 'kitchen_ops', 'auditor'],
+    agents: ['admin', 'revenue_manager', 'auditor'],
+    trust: ['admin', 'revenue_manager', 'auditor'],
+    audit: ['admin', 'revenue_manager', 'auditor'],
+    settings: revenueRoles,
+  };
+  const visibleNavGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => viewRoles[item.key]?.includes(currentUser?.role)),
+    }))
+    .filter((group) => group.items.length > 0);
 
   return (
     <div className="app-shell min-h-screen bg-transparent text-[#1B1F2A] flex flex-col font-sans-ui antialiased">
@@ -629,7 +672,10 @@ export default function App() {
       <CommandPalette
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
-        onNavigate={(view) => setActiveView(view)}
+        onNavigate={(view) => {
+          if (viewRoles[view]?.includes(currentUser?.role)) setActiveView(view);
+          else setGlobalBannerError('Your current operator role cannot access that section.');
+        }}
         onTriggerCopilot={handleOpenCopilot}
         onRunCycle={handleRunCycle}
       />
@@ -639,6 +685,7 @@ export default function App() {
         isOpen={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         initialPrompt={copilotInitialPrompt}
+        authFetch={authFetch}
       />
 
       {/* Refined Enterprise Top Navigation Bar */}
@@ -791,7 +838,7 @@ export default function App() {
           }`}
         >
           <div className="space-y-5">
-            {navGroups.map((grp) => (
+            {visibleNavGroups.map((grp) => (
               <div key={grp.group} className="space-y-1">
                 <div className="px-3 text-[10px] uppercase tracking-[0.18em] font-mono-tech text-[#5F667A] font-semibold">
                   {grp.group}
@@ -874,6 +921,7 @@ export default function App() {
                 onApproveRec={handleApproveRec}
                 onOpenCopilot={handleOpenCopilot}
                 onRefreshData={fetchAllData}
+                authFetch={authFetch}
               />
             )}
 
@@ -930,6 +978,7 @@ export default function App() {
               <DemandForecastingView
                 menuItems={menuItems}
                 currencySymbol={currencySymbol}
+                authFetch={authFetch}
                 onOpenCopilot={handleOpenCopilot}
               />
             )}

@@ -32,6 +32,8 @@ export function runForecastingTests(): { passed: number; total: number } {
   assert(forecast1.rmse! >= forecast1.mae!, 'Test 1: Mathematical invariant: RMSE >= MAE always holds');
   assert(forecast1.validationStatus.includes('held-out'), 'Test 1: Documents held-out out-of-sample validation split');
   assert(forecast1.assumptions.length >= 3, 'Test 1: Discloses model assumptions');
+  assert(forecast1.hasForecastData, 'Test 1: Reports when usable forecast data exists');
+  assert(forecast1.isSyntheticDemoData, 'Test 1: Clearly identifies seeded forecast data as synthetic');
 
   // Verify prediction interval bounds: lowerBound <= forecastedOrders <= upperBound
   const allBoundsValid = forecast1.next7DaysForecast.every(
@@ -43,6 +45,26 @@ export function runForecastingTests(): { passed: number; total: number } {
   const marginDay1 = forecast1.next7DaysForecast[0].upperBound - forecast1.next7DaysForecast[0].forecastedOrders;
   const marginDay7 = forecast1.next7DaysForecast[6].upperBound - forecast1.next7DaysForecast[6].forecastedOrders;
   assert(marginDay7 >= marginDay1, 'Test 1: Forecast uncertainty widens over time horizon');
+
+  const fullHistoryItem = db.menuItems.find((item) => item.id === 'item-1')!;
+  const originalHistory = fullHistoryItem.dailySalesHistory;
+  fullHistoryItem.dailySalesHistory = [...(originalHistory || [])].reverse();
+  const reverseHistoryForecast = generateDemandForecast('item-1');
+  assert(
+    reverseHistoryForecast.next7DaysForecast.every(
+      (point, index) => point.forecastedOrders === forecast1.next7DaysForecast[index].forecastedOrders
+    ),
+    'Test 1: Forecast sorts historical observations chronologically before fitting'
+  );
+  fullHistoryItem.dailySalesHistory = originalHistory;
+
+  let missingItemRejected = false;
+  try {
+    generateDemandForecast('missing-menu-item');
+  } catch {
+    missingItemRejected = true;
+  }
+  assert(missingItemRejected, 'Test 1: Unknown menu item does not silently forecast the first catalog item');
 
   // 2. Insufficient History Test: Item with < 14 observations must report "Validation metrics unavailable"
   // Temporarily push a test item with only 5 days of history
@@ -89,9 +111,20 @@ export function runForecastingTests(): { passed: number; total: number } {
     'Test 2: Correctly identifies model type as Heuristic Baseline when data is insufficient'
   );
 
+  const testItemNoSales = {
+    ...testItemShort,
+    id: 'item-test-no-sales',
+    name: 'Untracked Test Item',
+    historicalSalesLast30Days: 0,
+    dailySalesHistory: [],
+  };
+  db.menuItems.push(testItemNoSales);
+  const noSalesForecast = generateDemandForecast(testItemNoSales.id);
+  assert(!noSalesForecast.hasForecastData, 'Test 3: Marks forecasts unavailable when no order baseline exists');
+  assert(noSalesForecast.next7DaysForecast.length === 0, 'Test 3: Does not fabricate forecast values for missing data');
+
   // Clean up test item
-  const idx = db.menuItems.findIndex((m) => m.id === 'item-test-short');
-  if (idx !== -1) db.menuItems.splice(idx, 1);
+  db.menuItems = db.menuItems.filter((item) => !['item-test-short', 'item-test-no-sales'].includes(item.id));
 
   console.log(`\nResults: ${passed}/${total} forecasting tests passed.`);
   if (passed === total) {

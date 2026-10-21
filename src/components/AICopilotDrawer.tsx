@@ -10,12 +10,14 @@ interface AICopilotDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   initialPrompt?: string;
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>;
 }
 
 export const AICopilotDrawer: React.FC<AICopilotDrawerProps> = ({
   isOpen,
   onClose,
   initialPrompt = '',
+  authFetch,
 }) => {
   const [prompt, setPrompt] = useState(initialPrompt);
   const [response, setResponse] = useState<string | null>(null);
@@ -38,16 +40,17 @@ export const AICopilotDrawer: React.FC<AICopilotDrawerProps> = ({
     setMeta(null);
 
     try {
-      const res = await fetch('/api/ai/strategic-advice', {
+      const res = await authFetch('/api/ai/strategic-advice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: q }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
       setResponse(data.advice || 'No strategic advice generated.');
       setMeta({ source: data.source, modelUsed: data.modelUsed });
-    } catch (err: any) {
-      setResponse(`Error generating strategic analysis: ${err.message}`);
+    } catch (err) {
+      setResponse(`Error generating strategic analysis: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
     }

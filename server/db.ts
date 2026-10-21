@@ -36,6 +36,22 @@ import {
 const DB_FILE = path.resolve(process.cwd(), 'data', 'restaurantiq-data.json');
 const BACKUP_FILE = path.resolve(process.cwd(), 'data', 'backup-restaurantiq-v1.2.0.json');
 
+interface PersistedDatabaseState {
+  schemaVersion: string;
+  lastSavedAt: string;
+  outlets: RestaurantOutlet[];
+  policy: RestaurantPricingPolicy;
+  menuItems: MenuItem[];
+  competitors: Competitor[];
+  observations: CompetitorObservation[];
+  menuMatches: MenuMatch[];
+  inventory: InventoryItem[];
+  agents: AgentExecution[];
+  auditEvents: AuditEvent[];
+  recommendations: PricingRecommendation[];
+  priceChanges: PriceChangeRecord[];
+}
+
 export interface StorageHealth {
   status: 'healthy' | 'degraded' | 'error';
   persistedToDisk: boolean;
@@ -74,6 +90,8 @@ export class RestaurantDatabase {
 
   // Internal transaction queue for concurrency safety
   private writeQueue: Promise<void> = Promise.resolve();
+  private lastPersistedState: PersistedDatabaseState | null = null;
+  private recoveredFromBackup = false;
 
   constructor(dataFile = DB_FILE, backupFile = BACKUP_FILE) {
     this.dataFile = dataFile;
@@ -86,65 +104,36 @@ export class RestaurantDatabase {
    * otherwise seeds initial data and writes to disk atomically.
    */
   private initDatabase() {
-    try {
-      const dataDirectory = path.dirname(this.dataFile);
-      if (!fs.existsSync(dataDirectory)) {
-        fs.mkdirSync(dataDirectory, { recursive: true });
-      }
+    const dataDirectory = path.dirname(this.dataFile);
+    if (!fs.existsSync(dataDirectory)) fs.mkdirSync(dataDirectory, { recursive: true });
 
-      if (fs.existsSync(this.dataFile)) {
-        const raw = fs.readFileSync(this.dataFile, 'utf8');
-        const data = JSON.parse(raw);
-        if (data && ['1.5.0', '1.4.0', '1.2.0'].includes(data.schemaVersion)) {
-          this.outlets = data.outlets || this.outlets;
-          const storedPolicy = data.policy || {};
-          this.policy = {
-            ...initialPolicy,
-            ...storedPolicy,
-            maxIncreasePct: storedPolicy.maxIncreasePct ?? storedPolicy.maxMovementPct ?? initialPolicy.maxIncreasePct,
-            maxDecreasePct: storedPolicy.maxDecreasePct ?? storedPolicy.maxMovementPct ?? initialPolicy.maxDecreasePct,
-          };
-          this.menuItems = data.menuItems || this.menuItems;
-          this.competitors = data.competitors || this.competitors;
-          this.observations = data.observations || this.observations;
-          this.menuMatches = data.menuMatches || this.menuMatches;
-          this.inventory = data.inventory || this.inventory;
-          this.agents = data.agents || this.agents;
-          this.auditEvents = data.auditEvents || this.auditEvents;
-          this.recommendations = data.recommendations || [];
-          this.priceChanges = Array.isArray(data.priceChanges) ? data.priceChanges : [];
-          this.lastSavedAt = data.lastSavedAt || null;
+    const candidates = [
+      { file: this.dataFile, isBackup: false },
+      { file: this.backupFile, isBackup: true },
+    ].filter(({ file }) => fs.existsSync(file));
+
+    if (candidates.length) {
+      for (const candidate of candidates) {
+        try {
+          const data = JSON.parse(fs.readFileSync(candidate.file, 'utf8'));
+          if (!data || !['1.5.0', '1.4.0', '1.2.0'].includes(data.schemaVersion)) {
+            throw new Error('Unsupported database schema');
+          }
+          this.loadPersistedData(data);
+          this.recoveredFromBackup = candidate.isBackup;
+          this.lastPersistedState = JSON.parse(JSON.stringify(
+            this.toPersistedState(this.lastSavedAt || new Date().toISOString())
+          )) as PersistedDatabaseState;
           this.isHydratedFromDisk = true;
           this.recomputeCompetitorDistances();
-          this.recommendations = this.recommendations.map((rec) => {
-            const item = this.menuItems.find((menuItem) => menuItem.id === rec.menuItemId);
-            if (!item) return rec;
-            const stability = this.evaluateItemPriceStability(item, rec.suggestedPrice);
-            const customerTrustRisk = this.createTrustAssessment(item, stability.status, stability.recentPriceChanges.length
-              ? [`${stability.recentPriceChanges.length} actual price change(s) in the rolling period.`, `Cumulative applied-price increases: ${(stability.cumulativeIncreasePct * 100).toFixed(1)}%.`]
-              : []);
-            return {
-              ...rec,
-              isBlocked: rec.isBlocked || stability.blocked,
-              policyChecksPassed: rec.policyChecksPassed && !stability.blocked,
-              constraintStatus: stability.blocked ? 'blocked_trust_policy' : rec.constraintStatus,
-              flagReasons: [...new Set([...rec.flagReasons, ...stability.reasons])],
-              lastActualPriceChangeAt: stability.lastActualPriceChangeAt,
-              recentPriceChanges: stability.recentPriceChanges,
-              cumulativeIncreasePct: stability.cumulativeIncreasePct * 100,
-              stabilityPolicyStatus: stability.status,
-              customerTrustRisk,
-            };
-          });
-          if (this.recommendations.length === 0) {
-            this.generateInitialRecommendations();
-            this.saveToDisk();
-          }
+          this.revalidateStoredRecommendations();
+          if (candidate.isBackup || this.recommendations.length === 0) this.saveToDisk();
           return;
+        } catch (err) {
+          console.error(`Could not load database file ${candidate.file}:`, err);
         }
       }
-    } catch (err) {
-      console.warn('Could not read existing database file, falling back to clean seed data:', err);
+      throw new Error('No valid primary or backup database could be loaded; preserving existing files instead of overwriting them.');
     }
 
     // Initialize with fresh calculation and persist to disk
@@ -153,43 +142,151 @@ export class RestaurantDatabase {
     this.saveToDisk();
   }
 
+  private loadPersistedData(data: any) {
+    this.outlets = data.outlets || this.outlets;
+    const storedPolicy = data.policy || {};
+    this.policy = {
+      ...initialPolicy,
+      ...storedPolicy,
+      maxIncreasePct: storedPolicy.maxIncreasePct ?? storedPolicy.maxMovementPct ?? initialPolicy.maxIncreasePct,
+      maxDecreasePct: storedPolicy.maxDecreasePct ?? storedPolicy.maxMovementPct ?? initialPolicy.maxDecreasePct,
+    };
+    const seededItemIds = new Set(initialMenuItems.map((item) => item.id));
+    this.menuItems = (data.menuItems || this.menuItems).map((item: MenuItem) => ({
+      ...item,
+      isSyntheticDemoData: item.isSyntheticDemoData ?? seededItemIds.has(item.id),
+    }));
+    this.competitors = data.competitors || this.competitors;
+    this.observations = data.observations || this.observations;
+    this.menuMatches = data.menuMatches || this.menuMatches;
+    this.inventory = data.inventory || this.inventory;
+    this.agents = data.agents || this.agents;
+    this.auditEvents = data.auditEvents || this.auditEvents;
+    this.recommendations = data.recommendations || [];
+    this.priceChanges = Array.isArray(data.priceChanges) ? data.priceChanges : [];
+    this.lastSavedAt = data.lastSavedAt || null;
+  }
+
+  private revalidateStoredRecommendations() {
+    this.recommendations = this.recommendations.map((rec) => {
+      const item = this.menuItems.find((menuItem) => menuItem.id === rec.menuItemId);
+      if (!item) return rec;
+      const stability = this.evaluateItemPriceStability(item, rec.suggestedPrice);
+      const customerTrustRisk = this.createTrustAssessment(item, stability.status, stability.recentPriceChanges.length
+        ? [`${stability.recentPriceChanges.length} actual price change(s) in the rolling period.`, `Cumulative applied-price increases: ${(stability.cumulativeIncreasePct * 100).toFixed(1)}%.`]
+        : []);
+      return {
+        ...rec,
+        isBlocked: rec.isBlocked || stability.blocked,
+        policyChecksPassed: rec.policyChecksPassed && !stability.blocked,
+        constraintStatus: stability.blocked ? 'blocked_trust_policy' : rec.constraintStatus,
+        flagReasons: [...new Set([...rec.flagReasons, ...stability.reasons])],
+        lastActualPriceChangeAt: stability.lastActualPriceChangeAt,
+        recentPriceChanges: stability.recentPriceChanges,
+        cumulativeIncreasePct: stability.cumulativeIncreasePct * 100,
+        stabilityPolicyStatus: stability.status,
+        customerTrustRisk,
+      };
+    });
+    if (this.recommendations.length === 0) this.generateInitialRecommendations();
+  }
+
+  private toPersistedState(lastSavedAt = new Date().toISOString()): PersistedDatabaseState {
+    return {
+      schemaVersion: this.schemaVersion,
+      lastSavedAt,
+      outlets: this.outlets,
+      policy: this.policy,
+      menuItems: this.menuItems,
+      competitors: this.competitors,
+      observations: this.observations,
+      menuMatches: this.menuMatches,
+      inventory: this.inventory,
+      agents: this.agents,
+      auditEvents: this.auditEvents,
+      recommendations: this.recommendations,
+      priceChanges: this.priceChanges,
+    };
+  }
+
+  private restorePersistedState(state: PersistedDatabaseState) {
+    const snapshot = JSON.parse(JSON.stringify(state)) as PersistedDatabaseState;
+    this.schemaVersion = snapshot.schemaVersion;
+    this.lastSavedAt = snapshot.lastSavedAt;
+    this.outlets = snapshot.outlets;
+    this.policy = snapshot.policy;
+    this.menuItems = snapshot.menuItems;
+    this.competitors = snapshot.competitors;
+    this.observations = snapshot.observations;
+    this.menuMatches = snapshot.menuMatches;
+    this.inventory = snapshot.inventory;
+    this.agents = snapshot.agents;
+    this.auditEvents = snapshot.auditEvents;
+    this.recommendations = snapshot.recommendations;
+    this.priceChanges = snapshot.priceChanges;
+  }
+
   /**
    * Atomic, durable write to disk using temporary file replacement
    */
   public saveToDisk(): void {
+    let tmpFile: string | undefined;
+    let backupTmpFile: string | undefined;
     try {
       const dataDirectory = path.dirname(this.dataFile);
-      if (!fs.existsSync(dataDirectory)) {
-        fs.mkdirSync(dataDirectory, { recursive: true });
-      }
-
-      const state = {
-        schemaVersion: this.schemaVersion,
-        lastSavedAt: new Date().toISOString(),
-        outlets: this.outlets,
-        policy: this.policy,
-        menuItems: this.menuItems,
-        competitors: this.competitors,
-        observations: this.observations,
-        menuMatches: this.menuMatches,
-        inventory: this.inventory,
-        agents: this.agents,
-        auditEvents: this.auditEvents,
-        recommendations: this.recommendations,
-        priceChanges: this.priceChanges,
-      };
-
-      const tmpFile = `${this.dataFile}.tmp.${Date.now()}`;
+      if (!fs.existsSync(dataDirectory)) fs.mkdirSync(dataDirectory, { recursive: true });
+      const state = this.toPersistedState();
+      const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+      tmpFile = `${this.dataFile}.tmp.${suffix}`;
       fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2), 'utf8');
-      fs.renameSync(tmpFile, this.dataFile);
-      this.lastSavedAt = state.lastSavedAt;
-
-      // Keep backup updated
-      if (!fs.existsSync(this.backupFile)) {
-        fs.copyFileSync(this.dataFile, this.backupFile);
+      const descriptor = fs.openSync(tmpFile, 'r+');
+      try {
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
       }
+      if (fs.existsSync(this.dataFile) && !this.recoveredFromBackup) {
+        backupTmpFile = `${this.backupFile}.tmp.${suffix}`;
+        try {
+          fs.copyFileSync(this.dataFile, backupTmpFile);
+          if (fs.existsSync(this.backupFile)) fs.unlinkSync(this.backupFile);
+          fs.renameSync(backupTmpFile, this.backupFile);
+          backupTmpFile = undefined;
+        } catch (backupError) {
+          console.warn('Could not refresh the previous-state backup; continuing with the durable primary database:', backupError);
+        }
+      }
+      try {
+        fs.renameSync(tmpFile, this.dataFile);
+      } catch (renameError) {
+        const errorCode = (renameError as NodeJS.ErrnoException).code;
+        if (errorCode !== 'EPERM' && errorCode !== 'EBUSY') throw renameError;
+        console.warn('Atomic database replacement was blocked by the filesystem; writing the synced temporary file over the primary with the prior state retained in backup.');
+        fs.copyFileSync(tmpFile, this.dataFile);
+        const primaryDescriptor = fs.openSync(this.dataFile, 'r+');
+        try {
+          fs.fsyncSync(primaryDescriptor);
+        } finally {
+          fs.closeSync(primaryDescriptor);
+        }
+      }
+      this.lastSavedAt = state.lastSavedAt;
+      this.lastPersistedState = JSON.parse(JSON.stringify(state)) as PersistedDatabaseState;
+      this.recoveredFromBackup = false;
     } catch (err) {
       console.error('CRITICAL: Failed to write database state to disk:', err);
+      if (this.lastPersistedState) this.restorePersistedState(this.lastPersistedState);
+      throw new Error('Database state could not be persisted; the last durable state has been restored.');
+    } finally {
+      for (const tempFile of [tmpFile, backupTmpFile]) {
+        if (tempFile && fs.existsSync(tempFile)) {
+          try {
+            fs.unlinkSync(tempFile);
+          } catch (cleanupError) {
+            console.error(`Failed to clean up temporary database file ${tempFile}:`, cleanupError);
+          }
+        }
+      }
     }
   }
 
@@ -198,9 +295,17 @@ export class RestaurantDatabase {
    */
   public async runTransaction<T>(fn: () => T | Promise<T>): Promise<T> {
     const nextInQueue = this.writeQueue.then(async () => {
-      const result = await fn();
-      this.saveToDisk();
-      return result;
+      const before = JSON.parse(JSON.stringify(
+        this.toPersistedState(this.lastSavedAt || new Date().toISOString())
+      )) as PersistedDatabaseState;
+      try {
+        const result = await fn();
+        this.saveToDisk();
+        return result;
+      } catch (err) {
+        this.restorePersistedState(before);
+        throw err;
+      }
     });
 
     this.writeQueue = nextInQueue.then(() => {}).catch(() => {});

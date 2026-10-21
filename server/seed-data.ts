@@ -122,7 +122,11 @@ export const initialPolicy: RestaurantPricingPolicy = {
   },
 };
 
-export const initialMenuItems: MenuItem[] = [
+function markSyntheticMenuItems(items: MenuItem[]): MenuItem[] {
+  return items.map((item) => ({ ...item, isSyntheticDemoData: true }));
+}
+
+export const initialMenuItems: MenuItem[] = markSyntheticMenuItems([
   {
     id: 'item-1',
     name: 'Hyderabadi Chicken Dum Biryani',
@@ -563,7 +567,7 @@ export const initialMenuItems: MenuItem[] = [
     historicalSalesLast30Days: 980,
     dailySalesHistory: generateDailySalesHistory(32, 'steady'),
   },
-];
+]);
 
 export const initialMenuMatches: MenuMatch[] = [
   {

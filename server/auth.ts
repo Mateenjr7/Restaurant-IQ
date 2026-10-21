@@ -23,6 +23,8 @@ export interface TokenPayload {
   email: string;
   iat: number;
   exp: number;
+  iss: string;
+  aud: string;
 }
 
 declare global {
@@ -70,6 +72,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   ],
   auditor: [
     'menu:read',
+    'forecast:read',
     'policy:read',
     'inventory:read',
     'audit:read',
@@ -152,6 +155,16 @@ export function initializeAuthSecret(): void {
 export function signToken(user: { id: string; role: UserRole; name: string; email: string }, expiresInSeconds: number = 86400): string {
   if (!authSecret) initializeAuthSecret();
 
+  if (
+    !user.id ||
+    !Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, user.role) ||
+    !Number.isInteger(expiresInSeconds) ||
+    expiresInSeconds <= 0 ||
+    expiresInSeconds > 86400
+  ) {
+    throw new Error('Invalid token subject, role, or expiration');
+  }
+
   const now = Math.floor(Date.now() / 1000);
   const payload: TokenPayload = {
     sub: user.id,
@@ -160,6 +173,8 @@ export function signToken(user: { id: string; role: UserRole; name: string; emai
     email: user.email,
     iat: now,
     exp: now + expiresInSeconds,
+    iss: 'restaurantiq',
+    aud: 'restaurantiq-api',
   };
 
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -176,28 +191,45 @@ export function signToken(user: { id: string; role: UserRole; name: string; emai
 
 export function verifyToken(token: string): TokenPayload | null {
   if (!authSecret) initializeAuthSecret();
-  if (!token || typeof token !== 'string') return null;
+  if (!token || typeof token !== 'string' || token.length > 4096) return null;
 
   const parts = token.split('.');
   if (parts.length !== 3) return null;
 
   const [headerB64, payloadB64, signature] = parts;
 
-  // Constant-time signature verification to prevent timing attacks
-  const expectedSig = crypto
-    .createHmac('sha256', authSecret)
-    .update(`${headerB64}.${payloadB64}`)
-    .digest('base64url');
-
-  if (expectedSig.length !== signature.length) return null;
-  const valid = crypto.timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature));
-  if (!valid) return null;
-
   try {
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    if (header.alg !== 'HS256' || header.typ !== 'JWT') return null;
+
+    const expectedSig = crypto
+      .createHmac('sha256', authSecret)
+      .update(`${headerB64}.${payloadB64}`)
+      .digest();
+    const suppliedSig = Buffer.from(signature, 'base64url');
+    if (expectedSig.length !== suppliedSig.length || !crypto.timingSafeEqual(expectedSig, suppliedSig)) {
+      return null;
+    }
+
     const payload: TokenPayload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
     const now = Math.floor(Date.now() / 1000);
-    if (payload.exp && payload.exp < now) {
-      return null; // Expired
+    if (
+      !payload ||
+      typeof payload.sub !== 'string' ||
+      payload.sub.length === 0 ||
+      !Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, payload.role) ||
+      typeof payload.name !== 'string' ||
+      typeof payload.email !== 'string' ||
+      !Number.isInteger(payload.iat) ||
+      !Number.isInteger(payload.exp) ||
+      payload.iat > now + 60 ||
+      payload.exp <= now ||
+      payload.exp <= payload.iat ||
+      payload.exp - payload.iat > 86400 ||
+      payload.iss !== 'restaurantiq' ||
+      payload.aud !== 'restaurantiq-api'
+    ) {
+      return null;
     }
     return payload;
   } catch {
@@ -265,8 +297,15 @@ const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 export function rateLimit(windowMs: number = 60000, maxRequests: number = 60) {
   return (req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    const key = `${ip}:${req.path}`;
+    const pathKey = req.route?.path || req.path;
+    const key = `${ip}:${pathKey}`;
     const now = Date.now();
+
+    if (rateLimitMap.size > 5000) {
+      for (const [entryKey, entry] of rateLimitMap) {
+        if (now > entry.resetTime) rateLimitMap.delete(entryKey);
+      }
+    }
 
     const record = rateLimitMap.get(key);
     if (!record || now > record.resetTime) {
