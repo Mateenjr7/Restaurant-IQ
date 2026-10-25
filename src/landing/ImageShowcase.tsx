@@ -158,7 +158,7 @@ export const ImageShowcase: React.FC = () => {
 
         <figure className="room-layer culinary-photo-layer absolute right-[4%] top-[18%] z-10 w-[34%] max-w-[20rem] sm:right-[8%] md:right-[10%] md:top-[14%] md:w-[27%]">
           <div className="room-hover-plane culinary-interactive-plane culinary-photo-card overflow-hidden rounded-2xl border border-white/80 bg-sand shadow-[0_24px_60px_-36px_color-mix(in_srgb,var(--color-charcoal)_48%,transparent)]">
-            <img src="/assets/img/ambience.jpg" alt="" loading="lazy" className="h-36 w-full object-cover sm:h-48 md:h-60" />
+            <img src="/assets/img/story-dining-room.jpg" alt="Guests dining in a warmly lit, busy restaurant." loading="lazy" className="h-36 w-full object-cover sm:h-48 md:h-60" />
             <figcaption className="border-t border-rule bg-white/85 px-3 py-2.5 sm:px-4 sm:py-3">
               <span className="font-mono-tech text-[9px] uppercase tracking-[0.16em] text-persimmon">02 / Dining room</span>
               <span className="mt-1 block font-serif-display text-base leading-tight text-charcoal sm:text-xl">A full room, in focus</span>
