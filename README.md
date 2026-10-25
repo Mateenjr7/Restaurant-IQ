@@ -66,6 +66,18 @@ The image excludes local environment files and certificates. To run it, provide 
 
 GitHub Actions runs the type check, tests, and production build on pushes and pull requests targeting `main`. A successful push to `main` also publishes `latest` and commit-specific tags to Docker Hub. Create the matching Docker Hub repository and add the repository Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token) before merging to `main`.
 
+### Kubernetes deployment
+
+The `k8s/` manifests define the app namespace, a single-replica Deployment, an internal ClusterIP Service, database-backed readiness and liveness probes, and a CPU-based HPA (1–4 replicas, 70% target). The HPA requires a working Kubernetes metrics API. The public image is `mateen7jr/restaurantiq:latest`.
+
+Apply `k8s/namespace.yaml` first. Then create the `restaurantiq-runtime` Secret in the `restaurantiq` namespace with `DATABASE_URL`, a unique `AUTH_SECRET` of at least 32 characters, and `ALLOWED_ORIGINS` set to the app's intended origin. Create the `restaurantiq-ca` Secret from the current trusted Supabase CA certificate using the key `supabase-ca.crt`. Keep any local secret file and certificate private; local deployment environment files are excluded from Git. After creating both Secrets, apply the Deployment, Service, and HPA manifests. The Service is internal; expose it only after ingress, TLS, and production authentication are configured.
+
+### AWS EKS infrastructure
+
+`infra/terraform/` provisions a tagged VPC across two availability zones, an EKS cluster, one managed EC2 worker initially (up to two by default), and the EKS metrics-server add-on used by the HPA. It omits a NAT Gateway to reduce fixed costs; worker nodes use public subnets, while the Kubernetes API is limited to the administrator CIDRs you provide. EKS, worker compute, storage, and public IPv4 addresses can all incur charges.
+
+Terraform state and local variable files are excluded from Git. From `infra/terraform/`, run `terraform init`, then `terraform fmt -check -recursive`, `terraform validate`, and `terraform plan`. The plan prompts for an AWS region and the administrator's public IPv4 CIDR (usually your current IP with `/32`). Review the plan and compare regional pricing. Confirm available credits and budget before running `terraform apply`; EKS cannot be paused, and deleting the cluster is required to stop its control-plane charge. Applying this configuration creates billable AWS resources. After approval and creation, use the `configure_kubectl` output to connect kubectl to the cluster.
+
 ## Verify changes
 
 ```bash

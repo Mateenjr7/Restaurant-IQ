@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restaurantiq
+  namespace: restaurantiq
+  labels:
+    app.kubernetes.io/name: restaurantiq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: restaurantiq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: restaurantiq
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: restaurantiq
+          image: mateen7jr/restaurantiq:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: PERSISTENCE_MODE
+              value: postgres
+            - name: SUPABASE_CA_CERT_PATH
+              value: /run/secrets/supabase-ca.crt
+          envFrom:
+            - secretRef:
+                name: restaurantiq-runtime
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /api/live
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: supabase-ca
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: supabase-ca
+          secret:
+            secretName: restaurantiq-ca
+            items:
+              - key: supabase-ca.crt
+                path: supabase-ca.crt

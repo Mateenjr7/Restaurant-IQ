@@ -8,5 +8,13 @@ public/assets/aistudio/
 *.log
 .env*
 !.env.example
+/deployment.env
 /certs/*.crt
 /certs/*.pem
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
