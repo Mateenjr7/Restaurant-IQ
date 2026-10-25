@@ -19,11 +19,13 @@ async function runReleaseGate() {
       { runForecastingTests },
       { runPersistenceAndSecurityTests },
       { runCustomerTrustTests },
+      { runMetricsSecurityTests },
     ] = await Promise.all([
       import('./test-pricing-engine.ts'),
       import('./test-forecasting.ts'),
       import('./test-persistence-security.ts'),
       import('./test-customer-trust.ts'),
+      import('./test-metrics.ts'),
     ]);
 
     console.log('====================================================');
@@ -34,9 +36,10 @@ async function runReleaseGate() {
     const forecastingResults = runForecastingTests();
     const persistenceResults = await runPersistenceAndSecurityTests();
     const trustResults = runCustomerTrustTests();
+    const metricsResults = runMetricsSecurityTests();
 
-    const totalPassed = pricingResults.passed + forecastingResults.passed + persistenceResults.passed + trustResults.passed;
-    const totalTests = pricingResults.total + forecastingResults.total + persistenceResults.total + trustResults.total;
+    const totalPassed = pricingResults.passed + forecastingResults.passed + persistenceResults.passed + trustResults.passed + metricsResults.passed;
+    const totalTests = pricingResults.total + forecastingResults.total + persistenceResults.total + trustResults.total + metricsResults.total;
     if (totalPassed !== totalTests) {
       throw new Error(`Release gate failed: ${totalTests - totalPassed} of ${totalTests} assertions failed.`);
     }

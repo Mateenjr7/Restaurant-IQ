@@ -68,9 +68,41 @@ GitHub Actions runs the type check, tests, and production build on pushes and pu
 
 ### Kubernetes deployment
 
-The `k8s/` manifests define the app namespace, a single-replica Deployment, an internal ClusterIP Service, database-backed readiness and liveness probes, and a CPU-based HPA (1–4 replicas, 70% target). The HPA requires a working Kubernetes metrics API. The public image is `mateen7jr/restaurantiq:latest`.
+The `k8s/` manifests define the app namespace, a single-replica Deployment, an internal ClusterIP Service, database-backed readiness and liveness probes, and a CPU-based HPA (1–4 replicas, 70% target). The HPA requires a working Kubernetes metrics API. The `k8s/monitoring/` manifests add internal Prometheus and Grafana services, authenticated application metrics, a provisioned dashboard, and Prometheus alert rules. Monitoring uses ephemeral storage and is intended for the capstone demo, not long-term retention. The public image is `mateen7jr/restaurantiq:latest`.
 
-Apply `k8s/namespace.yaml` first. Then create the `restaurantiq-runtime` Secret in the `restaurantiq` namespace with `DATABASE_URL`, a unique `AUTH_SECRET` of at least 32 characters, and `ALLOWED_ORIGINS` set to the app's intended origin. Create the `restaurantiq-ca` Secret from the current trusted Supabase CA certificate using the key `supabase-ca.crt`. Keep any local secret file and certificate private; local deployment environment files are excluded from Git. After creating both Secrets, apply the Deployment, Service, and HPA manifests. The Service is internal; expose it only after ingress, TLS, and production authentication are configured.
+Apply both namespace manifests first:
+
+```powershell
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/monitoring/namespace.yaml
+```
+
+Create random values with a password manager and export them to protected local files outside the repository. Keep the scrape-token file to one line with no trailing newline. Reference those files when creating Secrets so values are not placed in shell history or command-line arguments:
+
+```powershell
+$metricsTokenFile = "C:\secure-path\restaurantiq-scrape-token"
+$grafanaPasswordFile = "C:\secure-path\grafana-admin-password"
+kubectl create secret generic restaurantiq-observability -n restaurantiq --from-file="scrape-token=$metricsTokenFile"
+kubectl create secret generic restaurantiq-observability -n monitoring --from-file="scrape-token=$metricsTokenFile" --from-file="admin-password=$grafanaPasswordFile"
+```
+
+Create `restaurantiq-runtime` in `restaurantiq` with `DATABASE_URL`, a unique `AUTH_SECRET` of at least 32 characters, and `ALLOWED_ORIGINS` set to the app's intended origin. Create `restaurantiq-ca` from the current trusted Supabase CA certificate using the key `supabase-ca.crt`. Do not commit these values, certificates, or expose them in logs. Apply the app Deployment, Service, and HPA, then all manifests in `k8s/monitoring/`. The Prometheus endpoint requires the bearer token; Grafana and Prometheus have only ClusterIP Services. Use `kubectl port-forward` for the demo rather than exposing monitoring publicly:
+
+```powershell
+kubectl port-forward -n monitoring svc/grafana 3000:3000
+```
+
+Open `http://localhost:3000` and sign in as `admin` with the privately saved Grafana password. Prometheus alert rules are evaluated and visible in its UI; notification delivery requires a separately configured provider.
+
+To inspect Prometheus targets and alert rules locally, use a second terminal:
+
+```powershell
+kubectl port-forward -n monitoring svc/prometheus 9090:9090
+```
+
+Then open `http://localhost:9090/targets` or `http://localhost:9090/alerts`.
+
+The app Service is internal; expose it only after ingress, TLS, and production authentication are configured.
 
 ### AWS EKS infrastructure
 

@@ -38,6 +38,11 @@ spec:
               value: postgres
             - name: SUPABASE_CA_CERT_PATH
               value: /run/secrets/supabase-ca.crt
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: restaurantiq-observability
+                  key: scrape-token
           envFrom:
             - secretRef:
                 name: restaurantiq-runtime

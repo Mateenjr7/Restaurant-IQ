@@ -11,6 +11,11 @@ import { fileURLToPath } from 'url';
 import { db } from './server/db.ts';
 import { postgresStore } from './server/postgres-store.ts';
 import { postgresRequestMiddleware } from './server/postgres-request-middleware.ts';
+import {
+  isMetricsAuthorizationValid,
+  metricsRegistry,
+  requestMetricsMiddleware,
+} from './server/metrics.ts';
 import { calculateDynamicPrice } from './server/pricing-engine.ts';
 import { generateDemandForecast, getAllDemandForecasts } from './server/forecasting.ts';
 import { generateStrategicAdvice } from './server/gemini.ts';
@@ -36,6 +41,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 // Security: JSON Payload size limit (protect against memory exhaustion / DOS)
 app.use(express.json({ limit: '1mb' }));
+app.use(requestMetricsMiddleware);
 
 // Security: Environment-specific CORS Allowlist configuration
 const configuredAllowedOrigins = process.env.ALLOWED_ORIGINS
@@ -88,6 +94,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     return res.sendStatus(204);
   }
   next();
+});
+
+app.get('/metrics', (req: Request, res: Response, next: NextFunction) => {
+  const metricsToken = process.env.METRICS_TOKEN;
+  if (!metricsToken) {
+    return res.sendStatus(503);
+  }
+  if (!isMetricsAuthorizationValid(req.get('authorization'), metricsToken)) {
+    return res.sendStatus(401);
+  }
+
+  metricsRegistry.metrics().then(
+    (metrics) => res.type(metricsRegistry.contentType).send(metrics),
+    next
+  );
 });
 
 // Authentication middleware attaches validated user to req.user
