@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+node_modules
+dist
+coverage
+data
+certs
+.env*
+*.crt
+*.key
+*.pem
+*.log

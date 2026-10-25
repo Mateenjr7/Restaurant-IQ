@@ -52,6 +52,20 @@ Pricing and policy checks are deterministic. Optional Gemini advice is advisory 
 
 Demo accounts and role switching are available only outside production.
 
+### Build a container
+
+With Docker Desktop running, build the production image:
+
+```powershell
+docker build -t restaurantiq:local .
+```
+
+The image excludes local environment files and certificates. To run it, provide the required production environment values and mount the verified PostgreSQL CA certificate at `/run/secrets/supabase-ca.crt`. Use a disposable database for local container testing; the application writes to its configured database.
+
+### Continuous integration and image publishing
+
+GitHub Actions runs the type check, tests, and production build on pushes and pull requests targeting `main`. A successful push to `main` also publishes `latest` and commit-specific tags to Docker Hub. Create the matching Docker Hub repository and add the repository Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token) before merging to `main`.
+
 ## Verify changes
 
 ```bash
