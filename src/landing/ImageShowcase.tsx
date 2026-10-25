@@ -171,8 +171,8 @@ export const ImageShowcase: React.FC = () => {
             <div className="dish-hover-plane culinary-interactive-plane relative aspect-square">
               <div className="dish-shadow pointer-events-none absolute inset-[18%] rounded-full bg-charcoal/15 blur-3xl" aria-hidden="true" />
               <img
-                src="/assets/img/plate.jpg"
-                alt="Illustrated overhead view of a richly garnished biryani in a serving dish"
+                src="/assets/img/story-signature-dish.jpg"
+                alt="Overhead photograph of a plated biryani with fragrant rice and garnish."
                 loading="lazy"
                 className="dish-cutout pointer-events-none absolute inset-0 h-full w-full object-cover"
               />
