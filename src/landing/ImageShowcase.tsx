@@ -148,7 +148,7 @@ export const ImageShowcase: React.FC = () => {
 
         <figure className="kitchen-layer culinary-photo-layer absolute left-[5%] top-[13%] z-10 w-[34%] max-w-[19rem] sm:left-[9%] md:top-[17%] md:w-[25%]">
           <div className="kitchen-hover-plane culinary-interactive-plane culinary-photo-card overflow-hidden rounded-2xl border border-white/80 bg-sand shadow-[0_24px_60px_-36px_color-mix(in_srgb,var(--color-charcoal)_48%,transparent)]">
-            <img src="/assets/img/kitchen.jpg" alt="" loading="lazy" className="h-40 w-full object-cover sm:h-52 md:h-64" />
+            <img src="/assets/img/story-kitchen.jpg" alt="Chef plating prepared dishes in a working restaurant kitchen before service." loading="lazy" className="h-40 w-full object-cover sm:h-52 md:h-64" />
             <figcaption className="border-t border-rule bg-white/85 px-3 py-2.5 sm:px-4 sm:py-3">
               <span className="font-mono-tech text-[9px] uppercase tracking-[0.16em] text-cobalt">01 / Kitchen</span>
               <span className="mt-1 block font-serif-display text-base leading-tight text-charcoal sm:text-xl">Ready before the rush</span>
