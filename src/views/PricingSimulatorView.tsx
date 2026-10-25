@@ -18,6 +18,7 @@ interface PricingSimulatorProps {
   initialRec?: any;
   menuItems: any[];
   currencySymbol: string;
+  loading?: boolean;
   onOpenCopilot: (prompt?: string) => void;
 }
 
@@ -25,30 +26,43 @@ export const PricingSimulatorView: React.FC<PricingSimulatorProps> = ({
   initialRec,
   menuItems,
   currencySymbol = '₹',
+  loading = false,
   onOpenCopilot,
 }) => {
   const defaultItem = initialRec
     ? menuItems.find((m) => m.id === initialRec.menuItemId) || menuItems[0]
     : menuItems[0];
 
-  const [selectedItemId, setSelectedItemId] = useState(defaultItem.id);
+  const [selectedItemId, setSelectedItemId] = useState(defaultItem?.id ?? '');
   const activeItem = menuItems.find((m) => m.id === selectedItemId) || menuItems[0];
 
   // Simulator Inputs
-  const [proposedPrice, setProposedPrice] = useState<number>(activeItem.currentPrice);
-  const [variableCost, setVariableCost] = useState<number>(activeItem.totalVariableCost);
-  const [minContribution, setMinContribution] = useState<number>(activeItem.minContribution || 60);
-  const [competitorMedian, setCompetitorMedian] = useState<number>(Math.round(activeItem.currentPrice * 1.08));
-  const [expectedBaseOrders, setExpectedBaseOrders] = useState<number>(Math.round(activeItem.historicalSalesLast30Days / 4));
+  const [proposedPrice, setProposedPrice] = useState<number>(defaultItem?.currentPrice ?? 0);
+  const [variableCost, setVariableCost] = useState<number>(defaultItem?.totalVariableCost ?? 0);
+  const [minContribution, setMinContribution] = useState<number>(defaultItem?.minContribution || 60);
+  const [competitorMedian, setCompetitorMedian] = useState<number>(Math.round((defaultItem?.currentPrice ?? 0) * 1.08));
+  const [expectedBaseOrders, setExpectedBaseOrders] = useState<number>(Math.round((defaultItem?.historicalSalesLast30Days ?? 0) / 4));
   const [elasticityFactor, setElasticityFactor] = useState<number>(1.25);
 
   useEffect(() => {
+    if (!activeItem) return;
     setProposedPrice(activeItem.currentPrice);
     setVariableCost(activeItem.totalVariableCost);
     setMinContribution(activeItem.minContribution || 60);
     setCompetitorMedian(Math.round(activeItem.currentPrice * 1.08));
     setExpectedBaseOrders(Math.round(activeItem.historicalSalesLast30Days / 4));
-  }, [selectedItemId]);
+  }, [activeItem, selectedItemId]);
+
+  if (!activeItem) {
+    return (
+      <div className="enterprise-panel border border-[#DDD7CA] rounded-2xl p-6" role="status">
+        <h1 className="text-2xl font-serif-display text-[#1B1F2A]">Elasticity &amp; Margin Simulator</h1>
+        <p className="mt-2 text-sm text-[#4A5164]">
+          {loading ? 'Loading menu items for the simulator…' : 'No menu items are available to simulate.'}
+        </p>
+      </div>
+    );
+  }
 
   // Deterministic Calculations
   const economicFloor = variableCost + minContribution;

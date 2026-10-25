@@ -1,15 +1,21 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import {fileURLToPath} from 'node:url';
 import {defineConfig} from 'vite';
+
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+const cacheRoot = process.env.LOCALAPPDATA
+  ?? process.env.XDG_CACHE_HOME
+  ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? process.cwd(), '.cache');
 
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
-    cacheDir: path.resolve(__dirname, 'node_modules/.vite-restaurantiq'),
+    cacheDir: path.join(cacheRoot, 'restaurantiq', 'vite'),
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': projectRoot,
       },
     },
     server: {

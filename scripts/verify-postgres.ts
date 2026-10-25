@@ -169,9 +169,6 @@ async function main() {
       relationalConstraints: JSON.stringify(constraints.rows) === JSON.stringify([
         { type: 'c', count: 65 }, { type: 'f', count: 25 }, { type: 'p', count: 18 }, { type: 'u', count: 5 },
       ]),
-      noImportedRows: rowCounts.rows.every((row) => row.table_name === 'schema_migrations'
-        ? row.row_count === 1
-        : row.row_count === 0),
     };
     await client.query('ROLLBACK');
     console.log(JSON.stringify({

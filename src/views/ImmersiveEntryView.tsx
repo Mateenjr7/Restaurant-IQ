@@ -401,6 +401,9 @@ export const ImmersiveEntryView: React.FC<ImmersiveEntryViewProps> = ({ onEnterC
                 <button onClick={() => scrollToId('pipeline')} data-cursor="Scroll" className="px-6 py-4 rounded-full glass-panel text-sm text-charcoal hover:bg-sand transition-colors">
                   See how it works
                 </button>
+                <button onClick={() => scrollToId('access')} data-cursor="Scroll" className="px-6 py-4 rounded-full glass-panel text-sm text-charcoal hover:bg-sand transition-colors">
+                  Choose a role
+                </button>
               </div>
             </div>
           </div>

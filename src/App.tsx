@@ -216,7 +216,7 @@ export default function App() {
   }, [authToken]);
 
   // Switch operator profile by obtaining a genuine server-signed JWT session
-  const switchOperatorRole = async (role: string) => {
+  const switchOperatorRole = async (role: string, navigateToOverview = true) => {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -227,7 +227,7 @@ export default function App() {
       if (res.ok && data.token) {
         setAuthToken(data.token);
         setCurrentUser(data.user);
-        setActiveView('overview');
+        if (navigateToOverview) setActiveView('overview');
         localStorage.setItem('restaurantiq_token', data.token);
         setUserDropdownOpen(false);
         setGlobalBannerError(null);
@@ -264,7 +264,7 @@ export default function App() {
         localStorage.removeItem('restaurantiq_token');
 
         // Default initial session: Revenue Manager
-        await switchOperatorRole('revenue_manager');
+        await switchOperatorRole('revenue_manager', false);
       } catch (err) {
         setGlobalBannerError(err instanceof Error ? err.message : 'RestaurantIQ authentication could not be initialized');
       }
@@ -970,6 +970,7 @@ export default function App() {
                 initialRec={simulatorItemData}
                 menuItems={menuItems}
                 currencySymbol={currencySymbol}
+                loading={loading}
                 onOpenCopilot={handleOpenCopilot}
               />
             )}

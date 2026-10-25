@@ -245,6 +245,18 @@ function validateState(state: ImportState) {
   return data;
 }
 
+function clearMissingAuditMenuItemReferences(data: Record<string, JsonRecord[]>) {
+  const menuItemIds = new Set(data.menuItems.map((row) => row.id));
+  let clearedReferences = 0;
+  for (const event of data.auditEvents) {
+    if (typeof event.menuItemId === 'string' && !menuItemIds.has(event.menuItemId)) {
+      event.menuItemId = null;
+      clearedReferences += 1;
+    }
+  }
+  return clearedReferences;
+}
+
 function isSynthetic(state: ImportState, data: Record<string, JsonRecord[]>) {
   const menuItems = data.menuItems.some((row) => row.isSyntheticDemoData === true);
   const observations = data.observations.some((row) => row.isSimulated === true || row.source === 'demo_dataset');
@@ -254,9 +266,26 @@ function isSynthetic(state: ImportState, data: Record<string, JsonRecord[]>) {
   return menuItems || observations || competitors || agents || seededAuditTrail || state.schemaVersion === 'seed';
 }
 
-async function insertWithoutOverwrite(client: Client, table: string, columns: string[], values: unknown[]) {
-  const placeholders = values.map((_, index) => `$${index + 1}`).join(', ');
-  const conflictKey = table === 'protected_price_categories'
+const pendingInserts = new Map<string, { columns: string[]; rows: unknown[][] }>();
+
+async function insertWithoutOverwrite(_client: Client, table: string, columns: string[], values: unknown[]) {
+  const pending = pendingInserts.get(table);
+  if (pending && (pending.columns.length !== columns.length ||
+      pending.columns.some((column, index) => column !== columns[index]))) {
+    throw new Error(`Inconsistent insert columns for ${table}.`);
+  }
+  if (values.length !== columns.length) {
+    throw new Error(`Invalid insert value count for ${table}.`);
+  }
+  if (pending) {
+    pending.rows.push(values);
+  } else {
+    pendingInserts.set(table, { columns, rows: [values] });
+  }
+}
+
+function conflictTarget(table: string) {
+  return table === 'protected_price_categories'
     ? '(restaurant_id, category)'
     : table === 'protected_menu_items'
       ? '(restaurant_id, menu_item_id)'
@@ -267,13 +296,26 @@ async function insertWithoutOverwrite(client: Client, table: string, columns: st
           : table === 'pricing_policies'
             ? '(restaurant_id)'
           : '(id)';
-  const result = await client.query(
-    `INSERT INTO public.${table} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT ${conflictKey} DO NOTHING RETURNING 1`,
-    values
-  );
-  if (result.rowCount !== 1) {
-    throw new Error(`Import conflict in ${table}; an existing row would not be overwritten. No partial import was committed.`);
+}
+
+async function flushPendingInserts(client: Client) {
+  const maxRowsPerInsert = 500;
+  for (const [table, { columns, rows }] of pendingInserts) {
+    for (let start = 0; start < rows.length; start += maxRowsPerInsert) {
+      const batch = rows.slice(start, start + maxRowsPerInsert);
+      const placeholders = batch.map((_, rowIndex) => (
+        `(${columns.map((_, columnIndex) => `$${rowIndex * columns.length + columnIndex + 1}`).join(', ')})`
+      )).join(', ');
+      const result = await client.query(
+        `INSERT INTO public.${table} (${columns.join(', ')}) VALUES ${placeholders} ON CONFLICT ${conflictTarget(table)} DO NOTHING RETURNING 1`,
+        batch.flat(),
+      );
+      if (result.rowCount !== batch.length) {
+        throw new Error(`Import conflict in ${table}; an existing row would not be overwritten. No partial import was committed.`);
+      }
+    }
   }
+  pendingInserts.clear();
 }
 
 async function main() {
@@ -287,6 +329,7 @@ async function main() {
   if (!isRecord(stateValue)) throw new Error('JSON snapshot root must be an object.');
   const state = stateValue as ImportState;
   const data = validateState(state);
+  const unlinkedAuditEvents = clearMissingAuditMenuItemReferences(data);
   const hasDemoData = isSynthetic(state, data);
   if (hasDemoData && !includeDemo) {
     throw new Error('Snapshot contains synthetic/demo records. No connection was made. Review them, then pass --include-demo-data only if their import is intentional.');
@@ -312,6 +355,7 @@ async function main() {
     sourceSha256: sourceHash,
     includedDemoData: includeDemo,
     records: counts,
+    normalizations: { auditEventsUnlinkedFromMissingMenuItems: unlinkedAuditEvents },
     skipped: 0,
     rejected: 0,
     failed: 0,
@@ -424,6 +468,8 @@ async function main() {
         ['id', 'restaurant_id', 'name', 'agent_key', 'role', 'status', 'last_run', 'duration_ms', 'input_summary', 'output_summary', 'items_processed', 'quality_score', 'confidence_score', 'is_simulated_telemetry', 'execution_mode'],
         [row.id, restaurantId, row.name, row.key, row.role, row.status, row.lastRun, row.durationMs, row.inputSummary, row.outputSummary, row.itemsProcessed, row.qualityScore ?? null, row.confidenceScore ?? null, row.isSimulatedTelemetry, row.executionMode]);
     }
+
+    await flushPendingInserts(client);
 
     const expectedCounts: Record<string, number> = {
       restaurants: 1,
